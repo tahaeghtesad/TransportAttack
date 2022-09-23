@@ -1,6 +1,6 @@
 import logging
 import math
-from typing import Optional, Union, Tuple, Callable, List
+from typing import Optional, Union, Tuple, Callable, List, Dict
 
 import gym
 import matplotlib.pyplot as plt
@@ -12,7 +12,7 @@ import util.tntp
 from transport_env.model import Trip
 
 
-class TransportationNetworkEnvironment(gym.Env):
+class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
 
     # Config contents:
     # - "city": the network file to load.
@@ -24,7 +24,7 @@ class TransportationNetworkEnvironment(gym.Env):
         self.config = config
         must_have_keys = [
             ('city', str),
-            ('trip_generator', Callable[[nx.Graph], list[Trip]]),
+            ('trip_generator', Callable[[nx.Graph], List[Trip]]),
             ('render_mode', str),
             ('horizon', int)
         ]
@@ -47,12 +47,12 @@ class TransportationNetworkEnvironment(gym.Env):
             create_using=nx.DiGraph
         )
 
-        scc = nx.number_strongly_connected_components(self.base)
-        if scc != 1:
-            raise Exception(f'The graph of {config["city"]} is not Strongly Connected. SCC count: {scc}')
+        # scc = nx.number_strongly_connected_components(self.base)
+        # if scc != 1:
+        #     raise Exception(f'The graph of {config["city"]} is not Strongly Connected. SCC count: {scc}')
 
-        self.trips: list[Trip] = []
-        self.previous_perturbations: list[int] = []
+        self.trips: List[Trip] = []
+        self.previous_perturbations: List[int] = []
         self.time_step = 0
 
         self.initialized = False
@@ -61,12 +61,7 @@ class TransportationNetworkEnvironment(gym.Env):
             self.pos = nx.kamada_kawai_layout(self.base)  # positions for all nodes
 
         self.action_space = gym.spaces.Box(-np.inf, np.inf, (self.base.number_of_edges(),))
-        self.observation_space = gym.spaces.Graph(
-            #  Features of each node: number of vehicles on the node
-            node_space=gym.spaces.Box(-np.inf, np.inf, (self.base.number_of_nodes(), 1)),
-            # Features of each edge: capacity, number of vehicles on edge
-            edge_space=gym.spaces.Box(-np.inf, np.inf, (self.base.number_of_edges(), 2))
-        )
+        self.observation_space = gym.spaces.Box(0, np.inf, shape=(self.base.number_of_nodes(), self.base.number_of_nodes()))
 
     def reset(
             self,
@@ -83,7 +78,7 @@ class TransportationNetworkEnvironment(gym.Env):
         self.finished = False
         self.time_step = 0
 
-        return self.__get_current_observation()
+        return self.__get_current_observation_matrix()
 
     def step(self, action) -> Union[
         Tuple[ObsType, float, bool, bool, dict], Tuple[ObsType, float, bool, dict]
@@ -144,9 +139,9 @@ class TransportationNetworkEnvironment(gym.Env):
         if remaining_trips == 0 or self.time_step >= self.config['horizon']:
             self.finished = True
 
-        reward = sum(on_edge.values()) + sum(on_vertex.values())
+        reward = (sum(on_edge.values()) + sum(on_vertex.values())) * self.config['reward_multiplier']
         done = self.finished
-        obs = self.__get_current_observation()
+        obs = self.__get_current_observation_matrix()
         info = dict()
 
         return obs, reward, done, info
@@ -256,7 +251,7 @@ class TransportationNetworkEnvironment(gym.Env):
             plt.savefig(f'TestPlots/{self.time_step}.png')
 
     # Number of vehicles on edge.
-    def __get_on_edge_vehicles(self) -> dict[tuple[int, int], int]:
+    def __get_on_edge_vehicles(self) -> Dict[Tuple[int, int], int]:
         on_edge = dict()
 
         for t in self.trips:
@@ -273,7 +268,7 @@ class TransportationNetworkEnvironment(gym.Env):
         return on_edge
 
     # Number of vehicles on nodes
-    def __get_on_vertex_vehicles(self) -> dict[int, int]:
+    def __get_on_vertex_vehicles(self) -> Dict[int, int]:
         on_vertex = dict()
         for t in self.trips:
             if t.time_to_next == 0 and t.next_node != t.destination:
@@ -316,3 +311,17 @@ class TransportationNetworkEnvironment(gym.Env):
             edges=None,
             edge_links=np.array(decision_edges)
         )
+
+    def __get_current_observation_matrix(self):
+        obs = np.zeros((self.base.number_of_nodes(), self.base.number_of_nodes()))
+        node_to_index = {n: i for i, n in enumerate(self.base.nodes)}
+
+        on_edge = self.__get_on_edge_vehicles()
+
+        for t in self.trips:
+            if t.time_to_next == 0 and t.next_node != t.destination:
+                path = nx.shortest_path(self.base, t.next_node, t.destination, weight=lambda u, v, d: on_edge[(u, v)])
+                for i in range(len(path) - 1):
+                    obs[node_to_index[path[i]], node_to_index[path[i + 1]]] += 1
+
+        return obs

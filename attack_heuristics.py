@@ -1,11 +1,13 @@
 import logging
+from typing import List
+
 import gym
 import networkx as nx
 
 import numpy as np
 
 
-def get_path_travel_time(path: list[int], weight):
+def get_path_travel_time(path: List[int], weight):
     distance = 0
     for i in range(len(path) - 1):
         distance += weight(path[i], path[i + 1], None)
