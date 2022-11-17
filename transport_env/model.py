@@ -12,6 +12,7 @@ class Trip:
     prev_node: int
     next_node: int
     time_to_next: int
+    edge_time: int
 
     @staticmethod
     def trip_creator(count):
@@ -38,7 +39,8 @@ class Trip:
                         progress=0,
                         prev_node=None,
                         next_node=start,
-                        time_to_next=0
+                        time_to_next=0,
+                        edge_time=0
                     )
                 )
             return trips
@@ -59,7 +61,8 @@ class Trip:
                         progress=0,
                         prev_node=None,
                         next_node=start,
-                        time_to_next=0
+                        time_to_next=0,
+                        edge_time=0
                     )
                 )
             return trips
@@ -76,6 +79,10 @@ class Trip:
                 sample_trips = sample_trips[:count]
             elif strategy == 'random':
                 sample_trips = random.sample(sample_trips, count)
+            elif strategy == 'random-top':
+                sample_trips = sample_trips[:random.randint(1, count)]
+            else:
+                raise Exception('Unknown strategy')
 
             for i, (source, dest, demand) in enumerate(sample_trips):
                 trips.append(
@@ -86,7 +93,8 @@ class Trip:
                         progress=0,
                         prev_node=None,
                         next_node=int(source),
-                        time_to_next=0
+                        time_to_next=0,
+                        edge_time=0
                     )
                 )
             return trips

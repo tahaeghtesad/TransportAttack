@@ -6,6 +6,8 @@ import networkx as nx
 
 import numpy as np
 
+from util.visualize import Timer
+
 
 def get_path_travel_time(path: List[int], weight):
     distance = 0
@@ -33,7 +35,6 @@ def estimate_delay_for_action(
     delay = 0
 
     for t in decision_graph.edge_links:
-
         perturbed_path = nx.shortest_path(
             reconstructed_graph,
             t[0],
@@ -50,7 +51,7 @@ def estimate_delay_for_action(
         perturbed_distance = get_path_travel_time(perturbed_path, lambda u, v, _: on_edge[(u, v)])
         correct_distance = get_path_travel_time(correct_path, lambda u, v, _: on_edge[(u, v)])
 
-        assert perturbed_distance >= correct_distance,\
+        assert perturbed_distance >= correct_distance, \
             f'Perturbed path is shorter than correct path'
         delay += perturbed_distance - correct_distance
 
@@ -79,9 +80,9 @@ class PostProcessHeuristic:
         self.name = self.heuristic.name
 
     def predict(self, obs):
-        self.logger.debug(f'Step {self.heuristic.step} - Obs: {obs}')
+        self.logger.log(1, f'Step {self.heuristic.step} - Obs: {obs}')
         action = self.heuristic.predict(obs)
-        self.logger.debug(f'Step {self.heuristic.step} - Action: {action}')
+        self.logger.log(1, f'Step {self.heuristic.step} - Action: {action}')
         return action
 
 
@@ -160,9 +161,9 @@ class MultiRandom(BaseHeuristic):
 
         max_index = 0
         max_perturbed = 0
-        self.logger.debug(f'Suggestion Perturbations: ')
+        self.logger.log(1, f'Suggestion Perturbations: ')
         for i, action in enumerate(actions):
-            self.logger.debug(f'Perturbation {i} - {action}')
+            self.logger.log(1, f'Perturbation {i} - {action}')
             if delay := estimate_delay_for_action(action, *obs) > max_perturbed:
                 max_perturbed = delay
                 max_index = i
@@ -210,3 +211,44 @@ class GreedyRider(BaseHeuristic):
         normalized_action = action * self.epsilon / np.linalg.norm(action, self.norm)
 
         return normalized_action
+
+
+class GreedyRiderMatrix(BaseHeuristic):
+    def __init__(self, env):
+        super().__init__(env.action_space, self.__class__.__name__)
+
+        self.edges = env.base.edges
+        self.epsilon = env.config['epsilon']
+        self.norm = env.config['norm']
+
+    def predict(self, obs):
+        super().predict(obs)
+
+        with Timer('GreedyRiderMatrix.predict.singular'):
+            response = np.zeros(self.action_space.shape)
+
+            if np.sum(obs) == 0:
+                return response
+
+            for i, e in enumerate(self.edges):
+                response[i] = obs[e[0] - 1, e[1] - 1]
+
+            normalized_response = response * self.epsilon / np.linalg.norm(response, self.norm)
+            return normalized_response
+
+
+class GreedyRiderVector(BaseHeuristic):
+    def __init__(self, env):
+        super().__init__(env.action_space, self.__class__.__name__)
+
+        self.edges = env.base.edges
+        self.epsilon = env.config['epsilon']
+        self.norm = env.config['norm']
+
+    def predict(self, obs):
+        super().predict(obs)
+
+        with Timer('GreedyRiderVector.predict.singular'):
+            norm = np.linalg.norm(obs[:, 0], self.norm)
+            normalized_response = self.epsilon * np.divide(obs[:, 0], norm, where=norm != 0)
+            return normalized_response

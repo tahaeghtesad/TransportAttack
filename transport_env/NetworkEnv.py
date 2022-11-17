@@ -10,6 +10,7 @@ from gym.core import ObsType, RenderFrame
 
 import util.tntp
 from transport_env.model import Trip
+from util.visualize import Timer
 
 
 class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
@@ -61,7 +62,10 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
             self.pos = nx.kamada_kawai_layout(self.base)  # positions for all nodes
 
         self.action_space = gym.spaces.Box(-np.inf, np.inf, (self.base.number_of_edges(),))
-        self.observation_space = gym.spaces.Box(0, np.inf, shape=(self.base.number_of_nodes(), self.base.number_of_nodes()))
+        # self.observation_space = gym.spaces.Box(0, np.inf,
+        #                                         shape=(self.base.number_of_nodes(), self.base.number_of_nodes()))
+        self.observation_space = gym.spaces.Box(0, np.inf, (self.base.number_of_edges(), 5,))
+        # self.observation_space = gym.spaces.Box(0, np.inf, (1, ))
 
     def reset(
             self,
@@ -78,7 +82,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
         self.finished = False
         self.time_step = 0
 
-        return self.__get_current_observation_matrix()
+        return self.__get_current_observation_edge_vector()
 
     def step(self, action) -> Union[
         Tuple[ObsType, float, bool, bool, dict], Tuple[ObsType, float, bool, dict]
@@ -94,6 +98,8 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
         remaining_trips = 0
         on_edge = self.__get_on_edge_vehicles()
         on_vertex = self.__get_on_vertex_vehicles()
+
+
         # listed_on_edge = [(on_edge[e] if e in on_edge else 0) for e in self.current.edges]
         perturbed = dict()
         for i, e in enumerate(self.base.edges):
@@ -102,7 +108,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
         for trip in self.trips:
 
             if trip.next_node == trip.destination and trip.time_to_next == 0:  # trip is finished
-                # self.logger.debug(f'Step: {self.time_step}. Trip {trip.number} finished.')
+                self.logger.debug(f'Step: {self.time_step}. Trip {trip.number} finished.')
                 continue
 
             # trip progressed for 1 step
@@ -111,40 +117,58 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
 
             # vehicle is on a node, we will calculate the next node and send the vehicle on that destination
             if trip.time_to_next == 0:
-                path = nx.shortest_path(self.base,
-                                        trip.next_node,
-                                        trip.destination,
-                                        weight=lambda u, v, info: self.__get_travel_time(u, v,
-                                                                                         on_edge[(u, v)]) + perturbed[
-                                                                      (u, v)])
+                path = nx.shortest_path(
+                    self.base,
+                    trip.next_node,
+                    trip.destination,
+                    weight=lambda u, v, _: np.maximum(0, self.get_travel_time(u, v, on_edge[(u, v)]) + perturbed[(u, v)])
+                )
+                path_weights = [self.get_travel_time(path[i], path[i+1], on_edge[(path[i], path[i+1])]) + perturbed[(path[i], path[i+1])] for i in range(len(path) - 1)]
+                original_path = nx.shortest_path(
+                    self.base,
+                    trip.next_node,
+                    trip.destination,
+                    weight=lambda u, v, _: np.maximum(0,
+                                                      self.get_travel_time(u, v, on_edge[(u, v)]))
+                )
+                original_path_weights = [self.get_travel_time(original_path[i], original_path[i + 1], on_edge[(original_path[i], original_path[i + 1])]) for i in range(len(original_path) - 1)]
                 trip.prev_node = trip.next_node
                 trip.next_node = path[1]
                 # This is actually not the weight, but perturbed weight
-                trip.time_to_next = self.__get_travel_time(trip.prev_node, trip.next_node,
-                                                           on_edge[(trip.prev_node, trip.next_node)])
+                trip.time_to_next = self.get_travel_time(trip.prev_node, trip.next_node,
+                                                         on_edge[(trip.prev_node, trip.next_node)])
+                # trip.time_to_next = self.get_travel_time(trip.prev_node, trip.next_node, 0)
+                trip.edge_time = trip.time_to_next
 
-                self.logger.debug(f'Step {self.time_step}.'
-                                  f' Trip {trip.number}({trip.start},{trip.destination}) arrived at node {trip.prev_node}.'
-                                  f' Going toward {trip.next_node}.'
-                                  f' Will arrive there in {trip.time_to_next} steps.'
-                                  f' Calculated Time to next is {self.__get_travel_time(trip.prev_node, trip.next_node, on_edge[(trip.prev_node, trip.next_node)] + perturbed[(trip.prev_node, trip.next_node)])}.')
+                self.logger.log(1, f'Step {self.time_step}.'
+                                   f' Trip {trip.number}({trip.start},{trip.destination}) arrived at node {trip.prev_node}.'
+                                   f' Going toward {trip.next_node}.'
+                                   f' Original path: {original_path}|{original_path_weights}.'
+                                   f' Perturbed path: {path}|{path_weights}.'
+                                   f' Will arrive there in {trip.time_to_next} steps.'
+                                   f' Calculated Time to next is {self.get_travel_time(trip.prev_node, trip.next_node, on_edge[(trip.prev_node, trip.next_node)] + perturbed[(trip.prev_node, trip.next_node)])}.')
 
             # if vehicle on the edge, let it progress
             if not trip.time_to_next == 0:
-                self.logger.debug(f'Step {self.time_step}.'
-                                  f' Trip {trip.number}({trip.start},{trip.destination}) going toward {trip.next_node}.'
-                                  f' Will arrive there in {trip.time_to_next} steps.')
+                self.logger.log(1, f'Step {self.time_step}.'
+                                   f' Trip {trip.number}({trip.start},{trip.destination}) going toward {trip.next_node}.'
+                                   f' Will arrive there in {trip.time_to_next} steps.')
                 trip.time_to_next -= 1
 
         if remaining_trips == 0 or self.time_step >= self.config['horizon']:
             self.finished = True
 
-        reward = (sum(on_edge.values()) + sum(on_vertex.values())) * self.config['reward_multiplier']
+        # reward = self.__get_reward() * self.config['reward_multiplier']
         done = self.finished
-        obs = self.__get_current_observation_matrix()
         info = dict()
+        obs = self.__get_current_observation_edge_vector()
+        # reward = (sum(on_vertex.values()) + sum(on_edge.values())) * self.config['reward_multiplier']
+        reward = self.__get_reward()
 
         return obs, reward, done, info
+
+    def __get_reward(self):
+        return (sum(self.__get_on_vertex_vehicles().values()) + sum(self.__get_on_edge_vehicles().values())) * self.config['reward_multiplier']
 
     """Compute the render frames as specified by render_mode attribute during initialization of the environment.
 
@@ -223,8 +247,8 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
                     edge: f'{self.base.edges[edge]["capacity"]:.0f}/'
                           f'{on_edge[edge]}/'
                           f'{self.previous_perturbations[i]}/'
-                          f'{self.__get_travel_time(edge[0], edge[1], on_edge[edge])}/'
-                          f'{self.__get_travel_time(edge[0], edge[1], on_edge[edge] + self.previous_perturbations[i])}'
+                          f'{self.get_travel_time(edge[0], edge[1], on_edge[edge])}/'
+                          f'{self.get_travel_time(edge[0], edge[1], on_edge[edge] + self.previous_perturbations[i])}'
                 },
                 font_size=16,
                 verticalalignment='baseline',
@@ -255,7 +279,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
         on_edge = dict()
 
         for t in self.trips:
-            if t.time_to_next > 0:
+            if t.time_to_next > 0 and t.prev_node is not None:
                 if (edge := (t.prev_node, t.next_node)) in on_edge:
                     on_edge[edge] += 1
                 else:
@@ -283,11 +307,11 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
 
         return on_vertex
 
-    def __get_travel_time(self, i: int, j: int, on_edge: int) -> int:
+    def get_travel_time(self, i: int, j: int, on_edge: int) -> int:
         capacity = self.base[i][j]['capacity']
         free_flow_time = self.base[i][j]['free_flow_time']
 
-        return math.ceil(free_flow_time * (1.0 + 0.15 * (on_edge / capacity) ** 4))
+        return math.ceil(free_flow_time * (1.0 + 0.15 * (on_edge * self.config['congestion'] / capacity) ** 4))
 
     def __get_current_observation(self) -> Tuple[gym.spaces.GraphInstance, gym.spaces.GraphInstance]:
         # I am going to do something that is not intuitive at all. I return two graphs:
@@ -304,7 +328,8 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
 
         return gym.spaces.GraphInstance(
             nodes=np.array([[0] for i in self.base.nodes]),
-            edges=np.array([[self.base.edges[i]['capacity'], self.__get_travel_time(i[0], i[1], on_edge[i]), self.__get_travel_time(i[0], i[1], on_edge[i])] for i in self.base.edges]),
+            edges=np.array([[self.base.edges[i]['capacity'], self.get_travel_time(i[0], i[1], on_edge[i]),
+                             self.get_travel_time(i[0], i[1], on_edge[i])] for i in self.base.edges]),
             edge_links=np.array([[i, j] for i, j in self.base.edges])
         ), gym.spaces.GraphInstance(
             nodes=np.array([[on_vertex[i]] for i in self.base.nodes]),
@@ -314,14 +339,70 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
 
     def __get_current_observation_matrix(self):
         obs = np.zeros((self.base.number_of_nodes(), self.base.number_of_nodes()))
-        node_to_index = {n: i for i, n in enumerate(self.base.nodes)}
 
         on_edge = self.__get_on_edge_vehicles()
 
         for t in self.trips:
             if t.time_to_next == 0 and t.next_node != t.destination:
-                path = nx.shortest_path(self.base, t.next_node, t.destination, weight=lambda u, v, d: on_edge[(u, v)])
+                path = nx.shortest_path(
+                    self.base, t.next_node, t.destination,
+                    weight=lambda u, v, d: self.get_travel_time(u, v, on_edge[(u, v)]))
                 for i in range(len(path) - 1):
-                    obs[node_to_index[path[i]], node_to_index[path[i + 1]]] += 1
+                    obs[path[i] - 1, path[i + 1] - 1] += 1
 
         return obs
+
+    def __get_current_observation_edge_vector(self):
+        feature_vector = np.zeros((self.base.number_of_edges(), 5,), dtype=np.float32)
+
+        on_edge = self.__get_on_edge_vehicles()
+        edges = {e: i for i, e in enumerate(self.base.edges)}
+
+        on_node_count = 0
+        for t in self.trips:
+            if t.time_to_next == 0 and t.next_node != t.destination:
+                path = nx.shortest_path(
+                    self.base, t.next_node, t.destination,
+                    weight=lambda u, v, d: self.get_travel_time(u, v, on_edge[(u, v)]))
+                for i in range(len(path) - 1):
+                    feature_vector[edges[(path[i], path[i + 1])]][0] += 1
+                feature_vector[edges[(path[0], path[1])]][2] += 1
+                on_node_count += 1
+            if t.time_to_next != 0:
+                path = nx.shortest_path(
+                    self.base, t.next_node, t.destination,
+                    weight=lambda u, v, d: self.get_travel_time(u, v, on_edge[(u, v)]))
+                for i in range(len(path) - 1):
+                    feature_vector[edges[(path[i], path[i + 1])]][4] += 1
+                if t.prev_node is not None:
+                    feature_vector[edges[t.prev_node, t.next_node]][3] += (
+                                                                   t.time_to_next) / t.edge_time
+
+        for i, e in enumerate(self.base.edges):
+            feature_vector[i][1] = on_edge[e]
+
+        return feature_vector
+
+    def get_adjacency_matrix(self):
+        adjacency_matrix = np.zeros((self.base.number_of_edges(), self.base.number_of_edges()), dtype=np.float32)
+
+        for i, e in enumerate(self.base.edges):
+            for j, a in enumerate(self.base.edges):
+                if e[1] == a[0]:
+                    adjacency_matrix[j][i] = 1
+
+        return adjacency_matrix
+
+    def get_greedy_rider_action(self):
+        with Timer('Greedy Rider Action'):
+            action = np.zeros((self.base.number_of_edges(),))
+            on_edge = self.__get_on_edge_vehicles()
+            edges = {e: i for i, e in enumerate(self.base.edges)}
+            for t in self.trips:
+                if t.time_to_next == 0 and t.next_node != t.destination:
+                    path = nx.shortest_path(self.base, t.next_node, t.destination,
+                                            weight=lambda u, v, d: on_edge[(u, v)])
+                    for i in range(len(path) - 1):
+                        action[edges[(path[i], path[i + 1])]] += 1
+            norm = np.linalg.norm(action, ord=self.config['norm'])
+        return self.config['epsilon'] * np.divide(action, norm, where=norm != 0)

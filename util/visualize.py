@@ -10,14 +10,15 @@ class Timer(object):
         self.name = name
 
         if name not in timer_stats:
-            timer_stats[name] = 0
+            timer_stats[name] = [0, 0]
 
     def __enter__(self):
         self.tstart = time.time()
 
     def __exit__(self, type, value, traceback):
         time_taken = time.time() - self.tstart
-        timer_stats[self.name] += time_taken
+        timer_stats[self.name][0] += time_taken
+        timer_stats[self.name][1] += 1
         if time_taken < 0.001:
             self.logger.debug(f'This iteration took {time_taken * 1000000:.0f}(\u03BCs).')
         elif time_taken < 1:
@@ -31,4 +32,4 @@ class Timer(object):
 
     @staticmethod
     def report(name):
-        logging.getLogger(f'Timer Report - {name}').info(f'Total time: {timer_stats[name]:.3f}(s)')
+        logging.getLogger(f'Timer Report - {name}').info(f'Total time: {timer_stats[name][0]:.3f}(s) - Average time: {timer_stats[name][0] / timer_stats[name][1]:.3f}(s) - Iterations: {timer_stats[name][1]}')
