@@ -89,7 +89,7 @@ class Agent(Process):
         self.logger.info(f'Agent {self.index} created.')
 
     def run(self) -> None:
-        self.logger.info(f'Initializing Agent {self.index} with config {self.config}')
+        self.logger.info(f'Initializing Agent {self.index}')
         # Config contains:
         # - env_config
         # - model_config
