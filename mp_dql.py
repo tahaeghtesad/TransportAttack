@@ -80,7 +80,7 @@ class Agent(Process):
         self.finished = False
         self.index = index
 
-        self.logger = multiprocessing.get_logger()
+        self.logger = logging.getLogger(f'Agent-{index}')
 
         self.model = None
         self.env = None
@@ -96,11 +96,12 @@ class Agent(Process):
         # - rl_config
         # - training_config
 
-        self.logger.info(f'Agent {self.index} initializing environment.')
+        self.logger.info(f'Initializing environment.')
         self.env = TransportationNetworkEnvironment(self.config['env_config'])
-        self.logger.info(f'Agent {self.index} initializing model.')
-        self.model = get_q_model(self.env, self.config)
-        self.logger.info(f'Agent {self.index} initializing exploration strategy.')
+        self.logger.info(f'Initializing model.')
+        with tf.device(f'/GPU:{self.index % 2}'):
+            self.model = get_q_model(self.env, self.config)
+        self.logger.info(f'Initializing exploration strategy.')
         if self.config['rl_config']['exploration']['type'] == 'constant':
             self.epsilon = ConstantEpsilon(self.config['rl_config']['exploration']['epsilon'])
         else:
@@ -189,10 +190,10 @@ class Trainer:
         self.logger = logging.getLogger('Trainer')
         self.config = config
 
-        self.logger.info(f'Initializing trainer with config {self.config}')
-        self.logger.info(f'Initializing environment variables.')
+        self.logger.info(f'Initializing trainer.')
+        self.logger.info(f'Initializing trainer environment variables.')
         self.env = TransportationNetworkEnvironment(config['env_config'])
-        self.logger.info(f'Initializing model.')
+        self.logger.info(f'Initializing trainer model.')
         self.model = get_q_model(self.env, config)
         self.logger.info(f'Trainer initialized.')
 
@@ -364,7 +365,7 @@ if __name__ == '__main__':
             num_episodes=10000
         ),
         training_config=dict(
-            num_cpu=8,
+            num_cpu=32,
             num_training_per_epoch=1
         ),
     )
