@@ -374,6 +374,10 @@ if __name__ == '__main__':
         ),
     )
 
+    gpus = tf.config.list_physical_devices('GPU')
+    tf.config.experimental.set_memory_growth(gpus[1], True)
+    tf.config.set_visible_devices(gpus[1], 'GPU')
+
     logging.basicConfig(stream=sys.stdout,
                         format='%(asctime)s - %(name)s - %(threadName)s - %(levelname)s - %(message)s',
                         level=logging.INFO
