@@ -1,16 +1,15 @@
 import logging
-import multiprocessing
 import sys
 from datetime import datetime
 from multiprocessing import Process, Pipe
+
 import numpy as np
-import tensorflow as tf
 import tensorflow_addons as tfa
 from tqdm import tqdm
 
 from attack_heuristics import GreedyRiderVector, Random, Zero
 from rl_util.experience_replay import ExperienceReplay
-from rl_util.exploration import ConstantEpsilon, DecayEpsilon
+from rl_util.exploration import ConstantEpsilon
 from tf_util.gcn import GraphConvolutionLayer
 from transport_env.NetworkEnv import TransportationNetworkEnvironment
 from transport_env.model import Trip
@@ -20,6 +19,7 @@ from util.visualize import Timer
 
 def get_optimal_action_and_value(states, action_dim, model, action_gradient_step_count, action_optimizer_lr, norm,
                                  epsilon):
+    import tensorflow as tf
     actions = tf.Variable(tf.random.normal((states.shape[0], action_dim)), name='action')
     before = model([states, actions])
     histogram = np.zeros(action_gradient_step_count)
@@ -42,6 +42,7 @@ def get_optimal_action_and_value(states, action_dim, model, action_gradient_step
 
 
 def get_q_model(env, config):
+    import tensorflow as tf
     action_shape = env.action_space.sample().shape  # 76
     state_shape = env.observation_space.sample().shape  # (76, 2)
     adj = env.get_adjacency_matrix()
@@ -90,6 +91,8 @@ class Agent(Process):
 
     def run(self) -> None:
         self.logger.info(f'Initializing Agent {self.index}')
+
+        import tensorflow as tf
 
         gpus = tf.config.list_physical_devices('GPU')
         tf.config.set_logical_device_configuration(
@@ -226,6 +229,7 @@ class Trainer:
         self.training_step = 0
 
     def update_model(self, samples):
+        import tensorflow as tf
         states = samples['states']
         actions = samples['actions']
         rewards = samples['rewards']
@@ -265,6 +269,7 @@ class Trainer:
                           step=self.training_step)
 
     def train(self):
+        import tensorflow as tf
         total_samples = 0
         for _ in (pbar := tqdm(range(self.config['rl_config']['num_episodes']))):
             with Timer('GetTrajectories'):
@@ -320,6 +325,7 @@ class Trainer:
 
 
 if __name__ == '__main__':
+    import tensorflow as tf
     config = dict(
         env_config=dict(
             city='SiouxFalls',
