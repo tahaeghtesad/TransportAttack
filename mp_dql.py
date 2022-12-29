@@ -90,6 +90,12 @@ class Agent(Process):
 
     def run(self) -> None:
         self.logger.info(f'Initializing Agent {self.index}')
+
+        gpus = tf.config.list_physical_devices('GPU')
+        tf.config.set_logical_device_configuration(
+            gpus[self.index % len(gpus)],
+            [tf.config.LogicalDeviceConfiguration(memory_limit=512)])
+
         # Config contains:
         # - env_config
         # - model_config
@@ -99,8 +105,7 @@ class Agent(Process):
         self.logger.info(f'Initializing environment.')
         self.env = TransportationNetworkEnvironment(self.config['env_config'])
         self.logger.info(f'Initializing model.')
-        with tf.device(f'/GPU:{self.index % 2}'):
-            self.model = get_q_model(self.env, self.config)
+        self.model = get_q_model(self.env, self.config)
         self.logger.info(f'Initializing exploration strategy.')
         if self.config['rl_config']['exploration']['type'] == 'constant':
             self.epsilon = ConstantEpsilon(self.config['rl_config']['exploration']['epsilon'])
