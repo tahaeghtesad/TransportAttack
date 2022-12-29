@@ -74,7 +74,6 @@ class Trip:
             trips = []
             with open(path, 'r') as f:
                 sample_trips = [line.split() for line in f.readlines()]
-
             if strategy == 'top':
                 sample_trips = sample_trips[:count]
             elif strategy == 'random':
@@ -100,3 +99,22 @@ class Trip:
             return trips
         return creator
 
+    @staticmethod
+    def trips_using_demand_file(path):
+        trips = []
+        with open(path, 'r') as f:
+            sample_trips = [line.split() for line in f.readlines()]
+            for i, (source, dest, demand) in enumerate(sample_trips):
+                trips.append(
+                    Trip(
+                        number=i,
+                        start=int(source),
+                        destination=int(dest),
+                        progress=0,
+                        prev_node=None,
+                        next_node=int(source),
+                        time_to_next=0,
+                        edge_time=0
+                    )
+                )
+            return trips

@@ -59,8 +59,8 @@ def estimate_delay_for_action(
 
 
 class BaseHeuristic:
-    def __init__(self, action_space, name):
-        self.action_space = action_space
+    def __init__(self, action_shape, name):
+        self.action_shape = action_shape
         self.logger = logging.getLogger(name)
 
         self.name = name
@@ -87,23 +87,23 @@ class PostProcessHeuristic:
 
 
 class Zero(BaseHeuristic):
-    def __init__(self, action_space):
-        super().__init__(action_space, self.__class__.__name__)
+    def __init__(self, action_shape):
+        super().__init__(action_shape, self.__class__.__name__)
 
     def predict(self, obs):
         super().predict(obs)
-        action = np.zeros(self.action_space.shape)
+        action = np.zeros(self.action_shape)
         return action
 
 
 class Random(BaseHeuristic):
-    def __init__(self, action_space,
+    def __init__(self, action_shape,
                  norm,
                  epsilon,
                  frac,  # In case 'selection' is 'continuous' this does not matter
                  selection  # Can be either 'continuous' or 'discrete'
                  ):
-        super().__init__(action_space, f'{self.__class__.__name__}.{selection}')
+        super().__init__(action_shape, f'{self.__class__.__name__}.{selection}')
 
         assert 0 <= frac <= 1, f'Invalid fraction, {frac}'
 
@@ -115,15 +115,15 @@ class Random(BaseHeuristic):
     def predict(self, obs):
         super().predict(obs)
 
-        action = np.zeros(self.action_space.shape)
+        action = np.zeros(self.action_shape)
         if self.selection == 'continuous':
             action = np.random.rand(
-                *self.action_space.shape
+                *self.action_shape
             )
         elif self.selection == 'discrete':
             action = self.epsilon * np.random.choice(
                 [0, 1],
-                size=self.action_space.shape,
+                size=self.action_shape,
                 p=[1 - self.frac, self.frac]
             )
         else:
@@ -153,7 +153,7 @@ class MultiRandom(BaseHeuristic):
     def predict(self, obs):
         nodes, edges, edge_links = obs[1]
         if nodes[:, 0].sum() == 0:
-            return np.zeros(self.action_space.shape)
+            return np.zeros(self.action_shape)
 
         actions = [
             self.generator.predict(obs) for _ in range(self.num_sample)
@@ -172,8 +172,8 @@ class MultiRandom(BaseHeuristic):
 
 class GreedyRider(BaseHeuristic):
 
-    def __init__(self, action_space, epsilon, norm):
-        super().__init__(action_space, self.__class__.__name__)
+    def __init__(self, action_shape, epsilon, norm):
+        super().__init__(action_shape, self.__class__.__name__)
         self.norm = norm
         self.epsilon = epsilon
 
@@ -182,7 +182,7 @@ class GreedyRider(BaseHeuristic):
         network_graph: gym.spaces.GraphInstance = obs[0]
         decision_graph: gym.spaces.GraphInstance = obs[1]
 
-        action = np.zeros(self.action_space.shape)
+        action = np.zeros(self.action_shape)
 
         if decision_graph.nodes.sum() == 0:
             return action
@@ -225,7 +225,7 @@ class GreedyRiderMatrix(BaseHeuristic):
         super().predict(obs)
 
         with Timer('GreedyRiderMatrix.predict.singular'):
-            response = np.zeros(self.action_space.shape)
+            response = np.zeros(self.action_shape)
 
             if np.sum(obs) == 0:
                 return response
@@ -238,12 +238,10 @@ class GreedyRiderMatrix(BaseHeuristic):
 
 
 class GreedyRiderVector(BaseHeuristic):
-    def __init__(self, env):
-        super().__init__(env.action_space, self.__class__.__name__)
-
-        self.edges = env.base.edges
-        self.epsilon = env.config['epsilon']
-        self.norm = env.config['norm']
+    def __init__(self, epsilon, norm):
+        super().__init__(None, self.__class__.__name__)
+        self.epsilon = epsilon
+        self.norm = norm
 
     def predict(self, obs):
         super().predict(obs)

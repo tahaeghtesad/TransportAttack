@@ -1,5 +1,6 @@
 import logging
 import math
+import random
 from typing import Optional, Union, Tuple, Callable, List, Dict
 
 import gym
@@ -23,21 +24,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
         self.logger = logging.getLogger(__name__)
 
         self.config = config
-        must_have_keys = [
-            ('city', str),
-            ('trip_generator', Callable[[nx.Graph], List[Trip]]),
-            ('render_mode', str),
-            ('horizon', int)
-        ]
         self.render_mode = config['render_mode']
-
-        for key, t in must_have_keys:
-            if key not in self.config:
-                raise Exception(f'Key "{key}" not specified in config')
-            # TODO make this work?
-            # Apparently <class 'function'> is not a <class 'Callable'>
-            # if type(self.config[key]) is not t:
-            #     raise Exception(f'Key "{key}" should be of type "{t}", but got "{type(self.config[key])}"')
 
         self.base: nx.DiGraph = nx.from_pandas_edgelist(
             df=util.tntp.load_net(
@@ -62,10 +49,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
             self.pos = nx.kamada_kawai_layout(self.base)  # positions for all nodes
 
         self.action_space = gym.spaces.Box(-np.inf, np.inf, (self.base.number_of_edges(),))
-        # self.observation_space = gym.spaces.Box(0, np.inf,
-        #                                         shape=(self.base.number_of_nodes(), self.base.number_of_nodes()))
         self.observation_space = gym.spaces.Box(0, np.inf, (self.base.number_of_edges(), 5,))
-        # self.observation_space = gym.spaces.Box(0, np.inf, (1, ))
 
     def reset(
             self,
@@ -75,7 +59,17 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
     ) -> Tuple[ObsType, dict]:
         super().reset(seed=seed, options=options)
 
-        self.trips: List[Trip] = self.config['trip_generator'](self.base)
+
+        if self.config['trips']['type'] == 'demand_file':
+            if self.config['trips']['strategy'] == 'random':
+                self.trips: List[Trip] = np.random.choice(self.config['trips']['trips'], size=self.config['trips']['count'])
+            elif self.config['trips']['strategy'] == 'top':
+                self.trips: List[Trip] = self.config['trips']['trips'][:self.config['trips']['count']]
+            else:
+                raise Exception(f'Unknown trip strategy: {self.config["trips"]["strategy"]}')
+        else:
+            raise Exception(f'Unknown trip type: {self.config["trips"]["type"]}')
+
         self.previous_perturbations = [0 for _ in range(self.base.number_of_edges())]
 
         self.initialized = True

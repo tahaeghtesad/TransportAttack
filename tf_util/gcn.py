@@ -30,6 +30,7 @@ class GraphConvolutionLayer(tf.keras.layers.Layer):
         config = super(GraphConvolutionLayer, self).get_config()
         config.update({
             'units': self.units,
-            'activation': self.activation
+            'activation': self.activation,
+            'adj': self.adj
         })
         return config
