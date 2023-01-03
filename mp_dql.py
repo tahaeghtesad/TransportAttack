@@ -2,6 +2,7 @@ import logging
 import sys
 from datetime import datetime
 from multiprocessing import Process, Pipe
+from typing import Callable, Any, Iterable, Mapping
 
 import numpy as np
 import tensorflow as tf
@@ -92,8 +93,11 @@ class Agent(Process):
         self.logger.info(f'Initializing Agent {self.index}')
 
         gpus = tf.config.list_physical_devices('GPU')
-        tf.config.experimental.set_memory_growth(gpus[self.index % len(gpus)], True)
-        tf.config.set_visible_devices(gpus[self.index % len(gpus)], 'GPU')
+        assigned_gpu = self.index % len(gpus)
+        tf.config.set_visible_devices(gpus[assigned_gpu], 'GPU')
+        tf.config.set_logical_device_configuration(
+            gpus[assigned_gpu],
+            [tf.config.LogicalDeviceConfiguration(memory_limit=128)])
 
         # Config contains:
         # - env_config
@@ -187,38 +191,21 @@ class Agent(Process):
         self.model.set_weights(new_weights)
 
 
-class Trainer:
+class Trainer(Process):
 
-    def __init__(self, config) -> None:
-        super().__init__()
+    def __init__(self, config, pipe) -> None:
+        super().__init__(name='Trainer')
+        self.model = None
+        self.env = None
         self.logger = logging.getLogger('Trainer')
         self.config = config
-
-        self.logger.info(f'Initializing trainer.')
-        self.logger.info(f'Initializing trainer environment variables.')
-        self.env = TransportationNetworkEnvironment(config['env_config'])
-        self.logger.info(f'Initializing trainer model.')
-        self.model = get_q_model(self.env, config)
-        self.logger.info(f'Trainer initialized.')
+        self.pipe = pipe
 
         # Config contains:
         # - env_config
         # - model_config
         # - rl_config
         # - training_config
-
-        self.agents = []
-        for i in range(config['training_config']['num_cpu']):
-            self.logger.info(f'Creating agent {i}.')
-            parent_conn, child_conn = Pipe()
-            agent = Agent(i, config, child_conn)
-            self.agents.append(
-                dict(
-                    agent=agent,
-                    pipe=parent_conn
-                )
-            )
-            agent.start()
 
         self.replay_buffer = ExperienceReplay(self.config['rl_config']['buffer_size'],
                                               self.config['rl_config']['batch_size'])
@@ -255,54 +242,27 @@ class Trainer:
         r2 = tfa.metrics.RSquare()
         r2.update_state(target_val, current_val)
 
-        tf.summary.scalar('rl/q_loss', data=loss, step=self.training_step)
-        tf.summary.scalar('rl/lr', data=self.model.optimizer._decayed_lr(tf.float32), step=self.training_step)
-        tf.summary.scalar('rl/r2', data=r2.result(), step=self.training_step)
+        return dict(
+            loss=loss.numpy(),
+            r2=r2.result(),
+            lr=self.model.optimizer.learning_rate.numpy(),
+            gamma=self.config['rl_config']['gamma'],
+        )
 
-        tf.summary.scalar('rl/gamma',
-                          data=self.config['rl_config']['gamma'],
-                          step=self.training_step)
+    def init(self):
+        gpus = tf.config.list_physical_devices('GPU')
+        assigned_gpu = 0
+        tf.config.set_visible_devices(gpus[assigned_gpu], 'GPU')
+        tf.config.set_logical_device_configuration(
+            gpus[assigned_gpu],
+            [tf.config.LogicalDeviceConfiguration(memory_limit=128)])
 
-    def train(self):
-        total_samples = 0
-        for _ in (pbar := tqdm(range(self.config['rl_config']['num_episodes']))):
-            with Timer('GetTrajectories'):
-                for agent in self.agents:
-                    agent['pipe'].send(dict(
-                        type='get_trajectories'
-                    ))
-                infos = []
-                for i, agent in enumerate(self.agents):
-                    msg = agent['pipe'].recv()
-                    assert msg['type'] == 'trajectories'
-                    self.replay_buffer.batch_add(msg['experiences'])
-                    infos.append(msg['info'])
-                    total_samples += msg['info']['episode_length']
-                    pbar.set_description(f'Received {i + 1}/{len(self.agents)} trajectories')
-
-            if self.replay_buffer.size() > self.config['rl_config']['batch_size']:
-                with Timer('UpdateModel'):
-                    for _ in range(self.config['training_config']['num_training_per_epoch']):
-                        self.update_model(self.replay_buffer.sample())
-                        self.training_step += 1
-
-                    for agent in self.agents:
-                        agent['pipe'].send(dict(
-                            type='update_weights',
-                            weights=self.model.get_weights()
-                        ))
-                        assert agent['pipe'].recv()['type'] == 'weights_updated'
-
-            tf.summary.scalar('rl/total_samples', data=total_samples, step=self.training_step)
-            tf.summary.histogram('rl/episode_length', data=[info['episode_length'] for info in infos], step=self.training_step)
-            tf.summary.histogram('rl/cumulative_reward', data=[info['cumulative_reward'] for info in infos], step=self.training_step)
-            tf.summary.histogram('rl/average_reward', data=[info['average_reward'] for info in infos], step=self.training_step)
-            tf.summary.histogram('rl/discounted_reward', data=[info['discounted_reward'] for info in infos], step=self.training_step)
-            tf.summary.histogram('rl/time', data=[info['time'].total_seconds() for info in infos], step=self.training_step)
-
-            time_report = ' ~ '.join([f'{timer}: {time / iterations:.3f}(s/i)' for timer, (time, iterations) in
-                                      visualize.timer_stats.items()])
-            # pbar.set_description(f'{time_report}')
+        self.logger.info(f'Initializing trainer.')
+        self.logger.info(f'Initializing trainer environment variables.')
+        self.env = TransportationNetworkEnvironment(self.config['env_config'])
+        self.logger.info(f'Initializing trainer model.')
+        self.model = get_q_model(self.env, self.config)
+        self.logger.info(f'Trainer initialized.')
 
     def store_model(self):
         path = f'{self.config["training_config"]["logdir"]}/model/weights'
@@ -313,12 +273,199 @@ class Trainer:
         self.logger.info(f'Loading model from logs/{run_id}/model/weights')
         self.model.load_weights(f'logs/{run_id}/model/weights')
 
+    def run(self) -> None:
+        self.init()
+        self.logger.info(f'Starting training.')
+        while True:
+            msg = self.pipe.recv()
+            if msg['type'] == 'update_model':
+                self.logger.debug(f'Updating model.')
+                samples = self.replay_buffer.sample()
+                stats = self.update_model(samples)
+                self.pipe.send(
+                    dict(
+                        type='model_updated',
+                        stats=stats,
+                        weights=self.model.get_weights()
+                    )
+                )
+            elif msg['type'] == 'add_samples':
+                self.logger.debug(f'adding samples.')
+                self.replay_buffer.batch_add(msg['experiences'])
+                self.pipe.send(dict(type='samples_added', total_experience=self.replay_buffer.size()))
+            else:
+                self.logger.error(f'Invalid Message {msg}')
+
+
+class TFLogger(Process):
+
+    def __init__(self, config, pipe) -> None:
+        super().__init__(name='TFLogger')
+        self.logger = logging.getLogger('TFLogger')
+        self.logger.info(f'Initializing logger.')
+        self.config = config
+        self.pipe = pipe
+        self.finished = False
+
+    def run(self) -> None:
+
+        gpus = tf.config.list_physical_devices('GPU')
+        assigned_gpu = 1
+        tf.config.set_visible_devices(gpus[assigned_gpu], 'GPU')
+        tf.config.set_logical_device_configuration(
+            gpus[assigned_gpu],
+            [tf.config.LogicalDeviceConfiguration(memory_limit=128)])
+
+        logdir = f'logs/{config["training_config"]["run_id"]}'
+        file_writer = tf.summary.create_file_writer(logdir + "/metrics")
+        file_writer.set_as_default()
+
+        while not self.finished:
+            msg = self.pipe.recv()
+            if msg['type'] == 'log_scalar':
+                tf.summary.scalar(msg['name'], msg['value'], msg['step'])
+            elif msg['type'] == 'log_histogram':
+                tf.summary.histogram(msg['name'], msg['value'], msg['step'])
+            else:
+                self.logger.error(f'Invalid Message {msg}')
+
+
+class Manager:
+    def __init__(self, config) -> None:
+        super().__init__()
+        self.config = config
+        self.logger = logging.getLogger('Manager')
+
+        self.agents = None
+        self.trainer = None
+        self.trainer_pipe = None
+        self.tf_logger = None
+        self.tf_logger_pipe = None
+
+        self.training_step = 0
+
+    def start(self):
+        self.agents = []
+        for i in range(config['training_config']['num_cpu']):
+            self.logger.debug(f'Creating agent {i}.')
+            parent_conn, child_conn = Pipe()
+            agent = Agent(i, config, child_conn)
+            self.agents.append(
+                dict(
+                    agent=agent,
+                    pipe=parent_conn
+                )
+            )
+
+        self.trainer_pipe, pipe = Pipe()
+        self.trainer = Trainer(config, pipe)
+
+        self.tf_logger_pipe, pipe = Pipe()
+        self.tf_logger = TFLogger(self.config, pipe)
+
+    def log_scalar(self, name, value, step):
+        self.tf_logger_pipe.send(dict(
+            type='log_scalar',
+            name=name,
+            value=value,
+            step=step
+        ))
+
+    def log_histogram(self, name, value, step):
+        self.tf_logger_pipe.send(dict(
+            type='log_histogram',
+            name=name,
+            value=value,
+            step=step
+        ))
+
     def killall(self):
         for agent in self.agents:
             agent['agent'].kill()
+        self.trainer.kill()
+        self.tf_logger.kill()
+
+    def train(self):
+
+        self.start()
+
+        self.logger.info(f'Starting agents.')
+        for agent in self.agents:
+            agent['agent'].start()
+        self.trainer.start()
+        self.tf_logger.start()
+
+        total_samples = 0
+        for _ in (pbar := tqdm(range(self.config['rl_config']['num_episodes']))):
+            with Timer('GetTrajectories'):
+                for agent in self.agents:
+                    agent['pipe'].send(dict(
+                        type='get_trajectories'
+                    ))
+                    pbar.set_description(f'Requesting Trajectories')
+                infos = []
+                for i, agent in enumerate(self.agents):
+                    pbar.set_description(f'Received {i}/{len(self.agents)} trajectories')
+                    msg = agent['pipe'].recv()
+                    self.trainer_pipe.send(dict(
+                        type='add_samples',
+                        experiences=msg['experiences']
+                    ))
+                    infos.append(msg['info'])
+                    total_samples += msg['info']['episode_length']
+                    experience_replay_buffer_size = self.trainer_pipe.recv()['total_experience']
+
+                self.log_scalar('rl/total_samples', total_samples, self.training_step)
+                self.log_scalar('rl/experience_replay_buffer_size', experience_replay_buffer_size, self.training_step)
+                self.log_histogram('rl/episode_lengths', [info['episode_length'] for info in infos],
+                                             self.training_step)
+                self.log_histogram('rl/cumulative_rewards', [info['cumulative_reward'] for info in infos],
+                                             self.training_step)
+                self.log_histogram('rl/average_reward', [info['average_reward'] for info in infos],
+                                             self.training_step)
+                self.log_histogram('rl/average_reward', [info['average_reward'] for info in infos],
+                                             self.training_step)
+                self.log_histogram('rl/discounted_reward', [info['discounted_reward'] for info in infos],
+                                             self.training_step)
+                self.log_histogram('rl/time', [info['time'].total_seconds() for info in infos],
+                                             self.training_step)
+
+            with Timer('UpdateModel'):
+                pbar.set_description(f'Updating model.')
+                for _ in range(self.config['training_config']['num_training_per_epoch']):
+                    self.trainer_pipe.send(
+                        dict(
+                            type='update_model'
+                        )
+                    )
+                    ack = self.trainer_pipe.recv()
+                    assert ack['type'] == 'model_updated'
+                    stats = ack['stats']
+                    new_weights = ack['weights']
+
+                    self.log_scalar('rl/q_loss', stats['loss'], self.training_step)
+                    self.log_scalar('rl/lr', stats['lr'], self.training_step)
+                    self.log_scalar('rl/gamma', stats['gamma'], self.training_step)
+                    self.log_scalar('rl/r2', stats['r2'], self.training_step)
+
+                    pbar.set_description(f'Sending updated weights.')
+
+                    for agent in self.agents:
+                        agent['pipe'].send(dict(
+                            type='update_weights',
+                            weights=new_weights
+                        ))
+                        assert agent['pipe'].recv()['type'] == 'weights_updated'
+
+                    self.training_step += 1
+
+            time_report = ' ~ '.join([f'{timer}: {time / iterations:.3f}(s/i)' for timer, (time, iterations) in
+                                      visualize.timer_stats.items()])
+            # pbar.set_description(f'{time_report}')
 
 
 if __name__ == '__main__':
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     config = dict(
         env_config=dict(
             city='SiouxFalls',
@@ -370,13 +517,10 @@ if __name__ == '__main__':
         ),
         training_config=dict(
             num_cpu=32,
-            num_training_per_epoch=1
+            num_training_per_epoch=4,
+            run_id=run_id
         ),
     )
-
-    gpus = tf.config.list_physical_devices('GPU')
-    tf.config.experimental.set_memory_growth(gpus[1], True)
-    tf.config.set_visible_devices(gpus[1], 'GPU')
 
     logging.basicConfig(stream=sys.stdout,
                         format='%(asctime)s - %(name)s - %(threadName)s - %(levelname)s - %(message)s',
@@ -385,11 +529,6 @@ if __name__ == '__main__':
                         )
 
     logger = logging.getLogger(__name__)
-
-    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-    logdir = f'logs/{run_id}'
-    file_writer = tf.summary.create_file_writer(logdir + "/metrics")
-    file_writer.set_as_default()
     logger.info(f'Starting run {run_id}...')
 
     config['rl_config']['heuristics'] = [
@@ -398,9 +537,11 @@ if __name__ == '__main__':
         Zero((76, )),
     ]
 
-    trainer = Trainer(config)
+    manager = Manager(config)
+
     try:
-        trainer.train()
-    except KeyboardInterrupt:
-        trainer.killall()
+        manager.train()
+    except BaseException as e:
+        logger.exception(f'Exception {e}')
+        manager.killall()
 
