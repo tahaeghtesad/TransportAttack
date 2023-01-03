@@ -59,7 +59,6 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
     ) -> Tuple[ObsType, dict]:
         super().reset(seed=seed, options=options)
 
-
         if self.config['trips']['type'] == 'demand_file':
             if self.config['trips']['strategy'] == 'random':
                 self.trips: List[Trip] = np.random.choice(self.config['trips']['trips'], size=self.config['trips']['count'])
@@ -69,6 +68,8 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
                 raise Exception(f'Unknown trip strategy: {self.config["trips"]["strategy"]}')
         else:
             raise Exception(f'Unknown trip type: {self.config["trips"]["type"]}')
+
+        Trip.reset_trips(self.trips)
 
         self.previous_perturbations = [0 for _ in range(self.base.number_of_edges())]
 

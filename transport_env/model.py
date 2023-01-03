@@ -118,3 +118,13 @@ class Trip:
                     )
                 )
             return trips
+
+    @staticmethod
+    def reset_trips(trips):
+        for trip in trips:
+            trip.prev_node = None
+            trip.next_node = trip.start
+            trip.progress = 0
+            trip.time_to_next = 0
+            trip.edge_time = 0
+
