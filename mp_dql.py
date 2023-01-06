@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from attack_heuristics import GreedyRiderVector, Random, Zero
 from rl_util.experience_replay import ExperienceReplay
-from rl_util.exploration import ConstantEpsilon
+import rl_util.exploration
 from tf_util.gcn import GraphConvolutionLayer
 from transport_env.NetworkEnv import TransportationNetworkEnvironment
 from transport_env.model import Trip
@@ -65,8 +65,8 @@ def get_q_model(env, config):
     model = tf.keras.Model(inputs=[state_in, action_in], outputs=output)
 
     model.compile(
-        optimizer=config['model_config']['optimizer']['type'],
-        loss=config['model_config']['loss'],
+        optimizer=tf.keras.optimizers.get(config['model_config']['optimizer']),
+        loss=tf.keras.losses.get(config['model_config']['loss']),
         metrics=[tfa.metrics.RSquare()]
     )
 
@@ -97,7 +97,7 @@ class Agent(Process):
         tf.config.set_visible_devices(gpus[assigned_gpu], 'GPU')
         tf.config.set_logical_device_configuration(
             gpus[assigned_gpu],
-            [tf.config.LogicalDeviceConfiguration(memory_limit=128)])
+            [tf.config.LogicalDeviceConfiguration(memory_limit=self.config['training_config']['agent_gpu_memory'])])
 
         # Config contains:
         # - env_config
@@ -110,10 +110,17 @@ class Agent(Process):
         self.logger.info(f'Initializing model.')
         self.model = get_q_model(self.env, self.config)
         self.logger.info(f'Initializing exploration strategy.')
-        if self.config['rl_config']['exploration']['type'] == 'constant':
-            self.epsilon = ConstantEpsilon(self.config['rl_config']['exploration']['epsilon'])
-        else:
-            raise ValueError('Unknown epsilon configuration.')
+        # if self.config['rl_config']['exploration']['type'] == 'constant':
+        #     self.epsilon = ConstantEpsilon(self.config['rl_config']['exploration']['config']['value'])
+        # elif self.config['rl_config']['exploration']['type'] == 'decaying':
+        #     self.epsilon = DecayEpsilon(
+        #         self.config['rl_config']['exploration']['config']['initial_epsilon'],
+        #         self.config['rl_config']['exploration']['config']['epsilon_end'],
+        #         self.config['rl_config']['exploration']['config']['epsilon_decay'])
+        # else:
+        #     raise ValueError('Unknown epsilon configuration.')
+        self.epsilon = getattr(rl_util.exploration, self.config['rl_config']['exploration']['type'])\
+            (**self.config['rl_config']['exploration']['config'])
 
         self.logger.info(f'Agent {self.index} started.')
         while not self.finished:
@@ -184,11 +191,14 @@ class Agent(Process):
             average_reward=rewards / count,
             discounted_reward=discounted_rewards,
             episode_length=count,
+            epsilon=self.epsilon.get_current_epsilon(),
             time=datetime.now() - start_time
         )
 
     def update_model_weights(self, new_weights):
         self.model.set_weights(new_weights)
+        # for (a, b) in zip(self.model.variables, new_weights):
+        #     a.assign(b * config['rl_config']['tau'] + a * (1 - config['rl_config']['tau']))
 
 
 class Trainer(Process):
@@ -242,26 +252,33 @@ class Trainer(Process):
         r2 = tfa.metrics.RSquare()
         r2.update_state(target_val, current_val)
 
+        current_lr = self.model.optimizer._decayed_lr(tf.float32).numpy() if callable(
+            getattr(self.model.optimizer, '_decayed_lr', None)) else self.model.optimizer.lr.numpy()
+
         return dict(
             loss=loss.numpy(),
             r2=r2.result(),
-            lr=self.model.optimizer.learning_rate.numpy(),
+            lr=current_lr,
             gamma=self.config['rl_config']['gamma'],
         )
 
     def init(self):
         gpus = tf.config.list_physical_devices('GPU')
-        assigned_gpu = 0
+        assigned_gpu = len(gpus) - 1
         tf.config.set_visible_devices(gpus[assigned_gpu], 'GPU')
         tf.config.set_logical_device_configuration(
             gpus[assigned_gpu],
-            [tf.config.LogicalDeviceConfiguration(memory_limit=128)])
+            [tf.config.LogicalDeviceConfiguration(memory_limit=self.config['training_config']['trainer_gpu_memory'])])
+        self.logger.info(f'All Devices: {tf.config.list_physical_devices()}')
+        self.logger.info(f'Logical Devices {tf.config.list_logical_devices()}')
+        self.logger.info(f'Assigned GPU {assigned_gpu} to trainer.')
 
         self.logger.info(f'Initializing trainer.')
         self.logger.info(f'Initializing trainer environment variables.')
         self.env = TransportationNetworkEnvironment(self.config['env_config'])
         self.logger.info(f'Initializing trainer model.')
         self.model = get_q_model(self.env, self.config)
+        self.model.summary()
         self.logger.info(f'Trainer initialized.')
 
     def store_model(self):
@@ -309,14 +326,9 @@ class TFLogger(Process):
 
     def run(self) -> None:
 
-        gpus = tf.config.list_physical_devices('GPU')
-        assigned_gpu = 1
-        tf.config.set_visible_devices(gpus[assigned_gpu], 'GPU')
-        tf.config.set_logical_device_configuration(
-            gpus[assigned_gpu],
-            [tf.config.LogicalDeviceConfiguration(memory_limit=128)])
+        tf.config.set_visible_devices([], 'GPU')
 
-        logdir = f'logs/{config["training_config"]["run_id"]}'
+        logdir = f'logs/{self.config["training_config"]["run_id"]}'
         file_writer = tf.summary.create_file_writer(logdir + "/metrics")
         file_writer.set_as_default()
 
@@ -346,7 +358,7 @@ class Manager:
 
     def start(self):
         self.agents = []
-        for i in range(config['training_config']['num_cpu']):
+        for i in range(config['training_config']['num_agents']):
             self.logger.debug(f'Creating agent {i}.')
             parent_conn, child_conn = Pipe()
             agent = Agent(i, config, child_conn)
@@ -417,22 +429,25 @@ class Manager:
 
                 self.log_scalar('rl/total_samples', total_samples, self.training_step)
                 self.log_scalar('rl/experience_replay_buffer_size', experience_replay_buffer_size, self.training_step)
-                self.log_histogram('rl/episode_lengths', [info['episode_length'] for info in infos],
-                                             self.training_step)
-                self.log_histogram('rl/cumulative_rewards', [info['cumulative_reward'] for info in infos],
-                                             self.training_step)
-                self.log_histogram('rl/average_reward', [info['average_reward'] for info in infos],
-                                             self.training_step)
-                self.log_histogram('rl/average_reward', [info['average_reward'] for info in infos],
-                                             self.training_step)
-                self.log_histogram('rl/discounted_reward', [info['discounted_reward'] for info in infos],
-                                             self.training_step)
-                self.log_histogram('rl/time', [info['time'].total_seconds() for info in infos],
-                                             self.training_step)
+                self.log_scalar('rl/epsilon', np.average([info['epsilon'] for info in infos]),
+                                self.training_step)
+                self.log_histogram('env/episode_lengths', [info['episode_length'] for info in infos],
+                                   self.training_step)
+                self.log_histogram('env/cumulative_rewards', [info['cumulative_reward'] for info in infos],
+                                   self.training_step)
+                self.log_histogram('env/average_reward', [info['average_reward'] for info in infos],
+                                   self.training_step)
+                self.log_histogram('env/average_reward', [info['average_reward'] for info in infos],
+                                   self.training_step)
+                self.log_histogram('env/discounted_reward', [info['discounted_reward'] for info in infos],
+                                   self.training_step)
+                self.log_histogram('env/epoch_time', [info['time'].total_seconds() for info in infos],
+                                   self.training_step)
 
             with Timer('UpdateModel'):
-                pbar.set_description(f'Updating model.')
-                for _ in range(self.config['training_config']['num_training_per_epoch']):
+                for i in range(self.config['training_config']['num_training_per_epoch']):
+                    pbar.set_description(
+                        f'Updating model {i}/{self.config["training_config"]["num_training_per_epoch"]}...')
                     self.trainer_pipe.send(
                         dict(
                             type='update_model'
@@ -448,16 +463,18 @@ class Manager:
                     self.log_scalar('rl/gamma', stats['gamma'], self.training_step)
                     self.log_scalar('rl/r2', stats['r2'], self.training_step)
 
-                    pbar.set_description(f'Sending updated weights.')
-
-                    for agent in self.agents:
-                        agent['pipe'].send(dict(
-                            type='update_weights',
-                            weights=new_weights
-                        ))
-                        assert agent['pipe'].recv()['type'] == 'weights_updated'
-
                     self.training_step += 1
+
+                pbar.set_description(f'Sending updated weights.')
+
+                for agent in self.agents:
+                    agent['pipe'].send(dict(
+                        type='update_weights',
+                        weights=new_weights
+                    ))
+
+                for agent in self.agents:
+                    assert agent['pipe'].recv()['type'] == 'weights_updated'
 
             time_report = ' ~ '.join([f'{timer}: {time / iterations:.3f}(s/i)' for timer, (time, iterations) in
                                       visualize.timer_stats.items()])
@@ -470,8 +487,8 @@ if __name__ == '__main__':
         env_config=dict(
             city='SiouxFalls',
             horizon=50,
-            epsilon=11,
-            norm=1,
+            epsilon=30,
+            norm=2,
             frac=0.5,
             num_sample=20,
             render_mode=None,
@@ -482,43 +499,70 @@ if __name__ == '__main__':
                 trips=Trip.trips_using_demand_file('Sirui/traffic_data/sf_demand.txt'),
                 strategy='random',
                 count=100
-            )
+            ),
+            rewarding_rule='vehicle_count',
         ),
         model_config=dict(
             optimizer=dict(
-                type='adam',
-                lr=1e-4,
+                class_name='Adam',
+                config=dict(
+                    # learning_rate=1e-5
+                    learning_rate=dict(
+                        class_name='ExponentialDecay',
+                        config=dict(
+                            initial_learning_rate=1e-4,
+                            decay_steps=400,
+                            decay_rate=0.95
+                        )
+                    )
+                )
             ),
             loss='mse',
             conv_layers=[
-                dict(size=8, activation='elu'),
-                dict(size=8, activation='elu'),
-                dict(size=8, activation='elu'),
-                dict(size=8, activation='elu'),
+                dict(size=32, activation='elu'),
+                dict(size=32, activation='elu'),
+                dict(size=32, activation='elu'),
+                dict(size=32, activation='elu'),
+                dict(size=32, activation='elu'),
+                dict(size=32, activation='elu'),
+                dict(size=32, activation='elu'),
             ],
             dense_layers=[
-                dict(size=8, activation='relu'),
+                dict(size=128, activation='elu'),
+                dict(size=64, activation='elu'),
+                dict(size=32, activation='relu'),
             ]
         ),
         rl_config=dict(
             exploration=dict(
-                type='constant',
-                epsilon=0.1,
+                # type='ConstantEpsilon',
+                # config=dict(
+                #     value=0.2
+                # ),
+                type='DecayEpsilon',
+                config=dict(
+                    epsilon_start=0.9,
+                    epsilon_end=0.05,
+                    epsilon_decay=1000
+                )
             ),
             heuristics=list(),
             max_q=dict(
                 action_gradient_step_count=7,
-                action_optimizer_lr=1e-3,
+                action_optimizer_lr=1e-4,
             ),
             gamma=0.95,
-            batch_size=64,
-            buffer_size=5000,
+            tau=0.01,
+            batch_size=512,
+            buffer_size=50000,
             num_episodes=10000
         ),
         training_config=dict(
-            num_cpu=32,
+            num_agents=27,
             num_training_per_epoch=4,
-            run_id=run_id
+            run_id=run_id,
+            agent_gpu_memory=256,
+            trainer_gpu_memory=256,
         ),
     )
 
@@ -533,8 +577,9 @@ if __name__ == '__main__':
 
     config['rl_config']['heuristics'] = [
         GreedyRiderVector(config['env_config']['epsilon'], config['env_config']['norm']),
-        Random((76, ), config['env_config']['norm'], config['env_config']['epsilon'], config['env_config']['frac'], 'discrete'),
-        Zero((76, )),
+        Random((76,), config['env_config']['norm'], config['env_config']['epsilon'], config['env_config']['frac'],
+               'discrete'),
+        Zero((76,)),
     ]
 
     manager = Manager(config)
@@ -544,4 +589,3 @@ if __name__ == '__main__':
     except BaseException as e:
         logger.exception(f'Exception {e}')
         manager.killall()
-

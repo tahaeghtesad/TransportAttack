@@ -45,6 +45,8 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
 
         self.initialized = False
         self.finished = False
+        self.finished_previous_step = 0
+
         if self.render_mode is not None:
             self.pos = nx.kamada_kawai_layout(self.base)  # positions for all nodes
 
@@ -77,6 +79,8 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
         self.finished = False
         self.time_step = 0
 
+        self.finished_previous_step = 0
+
         return self.__get_current_observation_edge_vector()
 
     def step(self, action) -> Union[
@@ -100,10 +104,11 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
         for i, e in enumerate(self.base.edges):
             perturbed[e] = action[i]
 
+        currently_finished = 0
         for trip in self.trips:
-
             if trip.next_node == trip.destination and trip.time_to_next == 0:  # trip is finished
                 self.logger.debug(f'Step: {self.time_step}. Trip {trip.number} finished.')
+                currently_finished += 1
                 continue
 
             # trip progressed for 1 step
@@ -153,12 +158,20 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
         if remaining_trips == 0 or self.time_step >= self.config['horizon']:
             self.finished = True
 
-        # reward = self.__get_reward() * self.config['reward_multiplier']
         done = self.finished
         info = dict()
         obs = self.__get_current_observation_edge_vector()
-        # reward = (sum(on_vertex.values()) + sum(on_edge.values())) * self.config['reward_multiplier']
-        reward = self.__get_reward()
+
+        if self.config['rewarding_rule'] == 'vehicle_count':
+            reward = self.__get_reward()
+        elif self.config['rewarding_rule'] == 'step_count':
+            reward = 0 if remaining_trips == 0 else 1
+        elif self.config['rewarding_rule'] == 'vehicles_finished':
+            reward = self.finished_previous_step - currently_finished
+        else:
+            raise Exception(f'Unknown rewarding rule: {self.config["rewarding_rule"]}')
+
+        self.finished_previous_step = currently_finished
 
         return obs, reward, done, info
 
