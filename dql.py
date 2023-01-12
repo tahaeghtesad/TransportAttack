@@ -10,8 +10,8 @@ import tensorflow_addons as tfa
 from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay
 from tqdm import tqdm
 
-from attack_heuristics import GreedyRiderVector, Random, Zero
-from tf_util.gcn import GraphConvolutionLayer
+from attack_heuristics import GreedyRiderVector, Random
+from util.tf.gcn import GraphConvolutionLayer
 from transport_env.NetworkEnv import TransportationNetworkEnvironment
 from transport_env.model import Trip
 from util import visualize

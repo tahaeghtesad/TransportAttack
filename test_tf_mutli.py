@@ -1,70 +1,76 @@
-from multiprocessing.pool import Pool
+from multiprocessing import Process, Pipe
+from tqdm import tqdm
 
+import tensorflow as tf
 import numpy as np
 
 
-def get_q_model(loss_function, optimizer):
-    import tensorflow as tf
+class Agent(Process):
+    def __init__(self, index, pipe) -> None:
+        super().__init__(name=f'Agent-{index}')
+        self.pipe = pipe
+        self.index = index
 
-    action_shape = (76, )
-    state_shape = (76, 2)
+    def run(self) -> None:
+        gpus = tf.config.list_physical_devices('GPU')
+        assigned_gpu = self.index % len(gpus)
+        print(tf.config.get_visible_devices())
+        tf.config.set_visible_devices(gpus[assigned_gpu], 'GPU')
+        print(tf.config.get_visible_devices())
+        tf.config.set_logical_device_configuration(
+            gpus[assigned_gpu],
+            [tf.config.LogicalDeviceConfiguration(memory_limit=512)])
+        logical_gpus = tf.config.list_logical_devices('GPU')
+        print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
 
-    state_in = tf.keras.layers.Input(shape=state_shape)
-    action_in = tf.keras.layers.Input(shape=action_shape)
-    action_reshaped = tf.keras.layers.Reshape((action_shape[0], 1))(action_in)
+        model = tf.keras.models.Sequential([
+            tf.keras.layers.Input(shape=(5, 5)),
+            tf.keras.layers.Flatten(),
+            tf.keras.layers.Dense(10, activation='relu'),
+            tf.keras.layers.Dense(1)
+        ])
 
-    mix = tf.keras.layers.Concatenate(axis=2)([state_in, action_reshaped])
+        model.compile(optimizer='adam', loss='mse')
 
-
-    shared = tf.keras.layers.Flatten()(mix)
-    shared = tf.keras.layers.Dense(8, activation='relu')(shared)
-
-    output = tf.keras.layers.Dense(1)(shared)
-    model = tf.keras.Model(inputs=[state_in, action_in], outputs=output)
-
-    model.compile(
-        optimizer=optimizer,
-        loss=loss_function,
-    )
-
-    model.summary()
-
-    return model
-
-
-def get_optimal_action_and_value(states, action_dim, model, action_gradient_step_count, action_optimizer_lr, norm,
-                                 epsilon):
-    import tensorflow as tf
-    actions = tf.Variable(tf.random.normal((states.shape[0], action_dim)), name='action')
-    print(actions.shape)
-    print(states.shape)
-    before = model([states, actions])
-    histogram = np.zeros(action_gradient_step_count)
-    action_optimizer = tf.keras.optimizers.Adam(learning_rate=action_optimizer_lr)
-
-    for i in range(action_gradient_step_count):
-        with tf.GradientTape(persistent=True) as tape:
-            q_value = -tf.reduce_mean(model([states, actions], training=True))
-
-        grads = tape.gradient(q_value, [actions])
-        action_optimizer.apply_gradients(zip(grads, [actions]))
-        actions.assign(
-            tf.math.divide_no_nan(actions, tf.norm(actions, axis=1, ord=norm, keepdims=True)) * epsilon)
-
-        histogram[i] = tf.reduce_mean((model([states, actions]).numpy() - before.numpy()) / before.numpy()) * 100
-
-    q_values = model([states, actions])
-
-    return actions, q_values, tf.convert_to_tensor(histogram)
-
-
-def run_multi_process(states, model):
-    for _ in range(1000):
-        get_optimal_action_and_value(states, 76, model, 20, 0.1, 2, 1)
-    return True
+        while True:
+            data = self.pipe.recv()
+            if data is None:
+                break
+            # self.pipe.send(model(data).numpy())
+            self.pipe.send(np.zeros((1, 1)))
 
 
 if __name__ == '__main__':
-    with Pool(4) as tp:
-        tp.starmap(run_multi_process, [(np.random.rand(512, 76, 2), get_q_model('mse', 'adam')) for _ in range(12)])
-    # run_multi_process(np.random.rand(512, 76, 2), get_q_model('mse', 'adam'))
+
+    # gpus = tf.config.list_physical_devices('GPU')
+    # assigned_gpu = 0
+    # tf.config.set_visible_devices(gpus[assigned_gpu], 'GPU')
+    # tf.config.set_logical_device_configuration(
+    #     gpus[assigned_gpu],
+    #     [tf.config.LogicalDeviceConfiguration(memory_limit=512)])
+    # logical_gpus = tf.config.list_logical_devices('GPU')
+    # print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
+    #
+    model = tf.keras.models.Sequential([
+        tf.keras.layers.Input(shape=(5, 5)),
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dense(10, activation='relu'),
+        tf.keras.layers.Dense(1)
+    ])
+
+    pipes = []
+    for i in range(4):
+        parent, child = Pipe()
+        agent = Agent(i, child)
+        pipes.append(parent)
+        agent.start()
+
+    for i in tqdm(range(10)):
+        for j, pipe in enumerate(pipes):
+            print(f'Sent sample {i} to agent {j}')
+            pipe.send(np.random.uniform(size=(128, 5, 5)))
+
+    for pipe in pipes:
+        for _ in tqdm(range(10)):
+            pipe.recv()
+        pipe.close()

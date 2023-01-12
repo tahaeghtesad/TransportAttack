@@ -2,44 +2,48 @@ import logging
 import sys
 from datetime import datetime
 from multiprocessing import Process, Pipe
-from typing import Callable, Any, Iterable, Mapping
 
 import numpy as np
 import tensorflow as tf
 import tensorflow_addons as tfa
 from tqdm import tqdm
 
-from attack_heuristics import GreedyRiderVector, Random, Zero
-from rl_util.experience_replay import ExperienceReplay
-import rl_util.exploration
-from tf_util.gcn import GraphConvolutionLayer
+import util.rl.exploration
+from attack_heuristics import Random, Zero
+from util.rl.experience_replay import ExperienceReplay
+from util.tf.gcn import GraphConvolutionLayer
+from util.tf.normalizers import LNormOptimizerLayer
 from transport_env.NetworkEnv import TransportationNetworkEnvironment
 from transport_env.model import Trip
 from util import visualize
 from util.visualize import Timer
 
 
-def get_optimal_action_and_value(states, action_dim, model, action_gradient_step_count, action_optimizer_lr, norm,
-                                 epsilon):
-    actions = tf.Variable(tf.random.normal((states.shape[0], action_dim)), name='action')
-    before = model([states, actions])
-    histogram = np.zeros(action_gradient_step_count)
-    action_optimizer = tf.keras.optimizers.Adam(learning_rate=action_optimizer_lr)
+@tf.function
+def get_optimal_action_and_value(actions, states, action_dim, model, action_gradient_step_count, action_optimizer, norm, epsilon):
+    # actions.assign(tf.random.normal((states.shape[0], action_dim)))
+    # before = model([states, actions])
+    # histogram = np.zeros(action_gradient_step_count)
+    # action_optimizer = tf.keras.optimizers.Adam(learning_rate=action_optimizer_lr)
 
     for i in range(action_gradient_step_count):
-        with tf.GradientTape(persistent=True) as tape:
-            q_value = -tf.reduce_mean(model([states, actions], training=True))
+        # with tf.GradientTape(persistent=True) as tape:
+        #     q_value = -tf.reduce_mean(model([states, actions], training=True))
 
-        grads = tape.gradient(q_value, [actions])
-        action_optimizer.apply_gradients(zip(grads, [actions]))
-        actions.assign(
-            tf.math.divide_no_nan(actions, tf.norm(actions, axis=1, ord=norm, keepdims=True)) * epsilon)
+        # grads = tape.gradient(q_value, [actions])
+        grads = tf.gradients(-tf.reduce_mean(model([states, actions])), [actions])[0]
+        actions.assign_add(grads * action_optimizer.lr)
+        normalized, _ = tf.linalg.normalize(actions, axis=1, ord=norm)
+        actions.assign(epsilon * normalized)
+        # action_optimizer.apply_gradients(zip(grads, actions))
+        # actions.assign(
+        #     tf.math.divide_no_nan(actions, tf.norm(actions, axis=1, ord=norm, keepdims=True)) * epsilon)
 
-        histogram[i] = tf.reduce_mean(tf.math.divide_no_nan(model([states, actions]) - before, before)) * 100
+        # histogram[i] = tf.reduce_mean(tf.math.divide_no_nan(model([states, actions]) - before, before)) * 100
 
     q_values = model([states, actions])
 
-    return actions, q_values, tf.convert_to_tensor(histogram)
+    return actions, q_values
 
 
 def get_q_model(env, config):
@@ -86,6 +90,8 @@ class Agent(Process):
         self.model = None
         self.env = None
         self.epsilon = None
+        self.actions = None
+        self.action_optimizer = None
 
         self.logger.info(f'Agent {self.index} created.')
 
@@ -109,6 +115,8 @@ class Agent(Process):
         self.env = TransportationNetworkEnvironment(self.config['env_config'])
         self.logger.info(f'Initializing model.')
         self.model = get_q_model(self.env, self.config)
+        self.actions = tf.Variable(tf.random.normal((1, self.env.action_space.shape[0])), name=f'action_agent-{self.index}')
+        self.action_optimizer = tf.keras.optimizers.Adam(learning_rate=self.config['rl_config']['max_q']['action_optimizer_lr'])
         self.logger.info(f'Initializing exploration strategy.')
         # if self.config['rl_config']['exploration']['type'] == 'constant':
         #     self.epsilon = ConstantEpsilon(self.config['rl_config']['exploration']['config']['value'])
@@ -119,29 +127,33 @@ class Agent(Process):
         #         self.config['rl_config']['exploration']['config']['epsilon_decay'])
         # else:
         #     raise ValueError('Unknown epsilon configuration.')
-        self.epsilon = getattr(rl_util.exploration, self.config['rl_config']['exploration']['type'])\
+        self.epsilon = getattr(util.rl.exploration, self.config['rl_config']['exploration']['type']) \
             (**self.config['rl_config']['exploration']['config'])
 
         self.logger.info(f'Agent {self.index} started.')
         while not self.finished:
             message = self.pipe.recv()
-            if message['type'] == 'get_trajectories':
-                self.logger.debug(f'Agent {self.index} received predict message.')
-                experiences, info = self.get_trajectories()
-                self.pipe.send(
-                    dict(
-                        type='trajectories',
-                        experiences=experiences,
-                        info=info
+            try:
+                if message['type'] == 'get_trajectories':
+                    self.logger.debug(f'Agent {self.index} received predict message.')
+                    experiences, info = self.get_trajectories()
+                    self.pipe.send(
+                        dict(
+                            type='trajectories',
+                            experiences=experiences,
+                            info=info
+                        )
                     )
-                )
-            if message['type'] == 'update_weights':
-                self.logger.debug(f'Agent {self.index} received update weights message.')
-                self.update_model_weights(message['weights'])
-                self.pipe.send(dict(type='weights_updated'))
-            elif message['type'] == 'close':
-                self.logger.debug(f'Agent {self.index} received close message.')
-                self.finished = True
+                if message['type'] == 'update_weights':
+                    self.logger.debug(f'Agent {self.index} received update weights message.')
+                    self.update_model_weights(message['weights'])
+                    self.pipe.send(dict(type='weights_updated'))
+                elif message['type'] == 'close':
+                    self.logger.debug(f'Agent {self.index} received close message.')
+                    self.finished = True
+            except Exception as e:
+                self.logger.exception(e)
+                self.pipe.send(dict(type='error', error=str(e)))
 
     def get_trajectories(self):
         start_time = datetime.now()
@@ -155,17 +167,21 @@ class Agent(Process):
         while not done:
             if self.epsilon():
                 action = np.random.choice(self.config['rl_config']['heuristics']).predict(obs)
+                action += np.random.normal(0, 1, size=action.shape)
+                action /= np.linalg.norm(action, ord=self.config['env_config']['norm'])
             else:
-                action = \
+                actions, _ = \
                     get_optimal_action_and_value(
+                        self.actions,
                         np.expand_dims(obs, axis=0),
                         self.env.action_space.sample().shape[0],
                         self.model,
                         self.config['rl_config']['max_q']['action_gradient_step_count'],
-                        self.config['rl_config']['max_q']['action_optimizer_lr'],
+                        self.action_optimizer,
                         self.config['env_config']['norm'],
                         self.config['env_config']['epsilon']
-                    )[0][0]
+                    )
+                action = actions[0]
 
             next_obs, reward, done, _ = self.env.step(action)
             next_action = self.config['rl_config']['heuristics'][0].predict(next_obs)
@@ -221,6 +237,9 @@ class Trainer(Process):
                                               self.config['rl_config']['batch_size'])
         self.training_step = 0
 
+        self.actions = None
+        self.action_optimizer = None
+
     def update_model(self, samples):
         states = samples['states']
         actions = samples['actions']
@@ -230,14 +249,14 @@ class Trainer(Process):
         next_actions = samples['next_actions']
 
         # q_values = self.model([next_states, next_actions])
-        _, q_values, histogram = get_optimal_action_and_value(
+        _, q_values = get_optimal_action_and_value(
+            self.actions,
             next_states,
             self.env.action_space.sample().shape[0],
             self.model,
             self.config['rl_config']['max_q'][
                 'action_gradient_step_count'],
-            self.config['rl_config']['max_q'][
-                'action_optimizer_lr'],
+            self.action_optimizer,
             self.config['env_config']['norm'],
             self.config['env_config']['epsilon']
         )
@@ -257,7 +276,7 @@ class Trainer(Process):
 
         return dict(
             loss=loss.numpy(),
-            r2=r2.result(),
+            r2=r2.result().numpy(),
             lr=current_lr,
             gamma=self.config['rl_config']['gamma'],
         )
@@ -279,39 +298,47 @@ class Trainer(Process):
         self.logger.info(f'Initializing trainer model.')
         self.model = get_q_model(self.env, self.config)
         self.model.summary()
+        self.actions = tf.Variable(tf.random.normal((self.config['rl_config']['batch_size'], self.env.action_space.shape[0])), name='action_optimizer')
+        self.action_optimizer = tf.keras.optimizers.Adam(learning_rate=self.config['rl_config']['max_q']['action_optimizer_lr'])
         self.logger.info(f'Trainer initialized.')
 
     def store_model(self):
-        path = f'{self.config["training_config"]["logdir"]}/model/weights'
-        self.logger.info(f'Storing model to {path}')
+        path = f'{self.config["training_config"]["logdir"]}/weights-{self.training_step}.h5'
+        self.logger.debug(f'Storing model to {path}')
         self.model.save_weights(path)
 
-    def load_model(self, run_id):
-        self.logger.info(f'Loading model from logs/{run_id}/model/weights')
-        self.model.load_weights(f'logs/{run_id}/model/weights')
+    def load_model(self, run_id, step):
+        self.logger.info(f'Loading model from {self.config["training_config"]["logdir"]}/weights-{step}.h5')
+        self.model.load_weights(f'{self.config["training_config"]["logdir"]}/weights-{step}.h5')
 
     def run(self) -> None:
         self.init()
         self.logger.info(f'Starting training.')
         while True:
             msg = self.pipe.recv()
-            if msg['type'] == 'update_model':
-                self.logger.debug(f'Updating model.')
-                samples = self.replay_buffer.sample()
-                stats = self.update_model(samples)
-                self.pipe.send(
-                    dict(
-                        type='model_updated',
-                        stats=stats,
-                        weights=self.model.get_weights()
+            try:
+                if msg['type'] == 'update_model':
+                    self.logger.debug(f'Updating model.')
+                    samples = self.replay_buffer.sample()
+                    stats = self.update_model(samples)
+                    self.pipe.send(
+                        dict(
+                            type='model_updated',
+                            stats=stats,
+                            weights=self.model.get_weights()
+                        )
                     )
-                )
-            elif msg['type'] == 'add_samples':
-                self.logger.debug(f'adding samples.')
-                self.replay_buffer.batch_add(msg['experiences'])
-                self.pipe.send(dict(type='samples_added', total_experience=self.replay_buffer.size()))
-            else:
-                self.logger.error(f'Invalid Message {msg}')
+                elif msg['type'] == 'add_samples':
+                    self.logger.debug(f'adding samples.')
+                    self.replay_buffer.batch_add(msg['experiences'])
+                    self.pipe.send(dict(type='samples_added', total_experience=self.replay_buffer.size()))
+                elif msg['type'] == 'store_model':
+                    self.store_model()
+                else:
+                    self.logger.error(f'Invalid Message {msg}')
+            except Exception as e:
+                self.logger.error(f'Error raised {e}')
+                self.pipe.send(dict(type='error', error=e))
 
 
 class TFLogger(Process):
@@ -328,8 +355,7 @@ class TFLogger(Process):
 
         tf.config.set_visible_devices([], 'GPU')
 
-        logdir = f'logs/{self.config["training_config"]["run_id"]}'
-        file_writer = tf.summary.create_file_writer(logdir + "/metrics")
+        file_writer = tf.summary.create_file_writer(self.config["training_config"]["logdir"] + "/metrics")
         file_writer.set_as_default()
 
         while not self.finished:
@@ -419,6 +445,8 @@ class Manager:
                 for i, agent in enumerate(self.agents):
                     pbar.set_description(f'Received {i}/{len(self.agents)} trajectories')
                     msg = agent['pipe'].recv()
+                    if msg['type'] == 'error':
+                        raise Exception(msg['error'])
                     self.trainer_pipe.send(dict(
                         type='add_samples',
                         experiences=msg['experiences']
@@ -431,37 +459,43 @@ class Manager:
                 self.log_scalar('rl/experience_replay_buffer_size', experience_replay_buffer_size, self.training_step)
                 self.log_scalar('rl/epsilon', np.average([info['epsilon'] for info in infos]),
                                 self.training_step)
+                self.log_scalar('env/reward', np.average([info['cumulative_reward'] for info in infos]),
+                                self.training_step)
                 self.log_histogram('env/episode_lengths', [info['episode_length'] for info in infos],
                                    self.training_step)
                 self.log_histogram('env/cumulative_rewards', [info['cumulative_reward'] for info in infos],
                                    self.training_step)
                 self.log_histogram('env/average_reward', [info['average_reward'] for info in infos],
                                    self.training_step)
-                self.log_histogram('env/average_reward', [info['average_reward'] for info in infos],
-                                   self.training_step)
                 self.log_histogram('env/discounted_reward', [info['discounted_reward'] for info in infos],
                                    self.training_step)
-                self.log_histogram('env/epoch_time', [info['time'].total_seconds() for info in infos],
+                self.log_histogram('env/time', [info['time'].total_seconds() for info in infos],
                                    self.training_step)
 
             with Timer('UpdateModel'):
                 for i in range(self.config['training_config']['num_training_per_epoch']):
                     pbar.set_description(
                         f'Updating model {i}/{self.config["training_config"]["num_training_per_epoch"]}...')
+
+                    start = datetime.now()
                     self.trainer_pipe.send(
                         dict(
                             type='update_model'
                         )
                     )
                     ack = self.trainer_pipe.recv()
+                    if ack['type'] == 'error':
+                        raise Exception(ack['error'])
                     assert ack['type'] == 'model_updated'
                     stats = ack['stats']
                     new_weights = ack['weights']
+                    duration = (datetime.now() - start).total_seconds()
 
                     self.log_scalar('rl/q_loss', stats['loss'], self.training_step)
                     self.log_scalar('rl/lr', stats['lr'], self.training_step)
                     self.log_scalar('rl/gamma', stats['gamma'], self.training_step)
                     self.log_scalar('rl/r2', stats['r2'], self.training_step)
+                    self.log_scalar('training/train_time', duration, self.training_step)
 
                     self.training_step += 1
 
@@ -476,6 +510,11 @@ class Manager:
                 for agent in self.agents:
                     assert agent['pipe'].recv()['type'] == 'weights_updated'
 
+                if self.training_step % self.config['training_config']['checkpoint_interval'] == 0:
+                    self.trainer_pipe.send(dict(
+                        type='store_model'
+                    ))
+
             time_report = ' ~ '.join([f'{timer}: {time / iterations:.3f}(s/i)' for timer, (time, iterations) in
                                       visualize.timer_stats.items()])
             # pbar.set_description(f'{time_report}')
@@ -489,7 +528,7 @@ if __name__ == '__main__':
             horizon=50,
             epsilon=30,
             norm=2,
-            frac=0.5,
+            frac=0.25,
             num_sample=20,
             render_mode=None,
             reward_multiplier=1.0,
@@ -519,18 +558,18 @@ if __name__ == '__main__':
             ),
             loss='mse',
             conv_layers=[
-                dict(size=32, activation='elu'),
-                dict(size=32, activation='elu'),
-                dict(size=32, activation='elu'),
-                dict(size=32, activation='elu'),
-                dict(size=32, activation='elu'),
-                dict(size=32, activation='elu'),
-                dict(size=32, activation='elu'),
+                dict(size=64, activation='elu'),
+                dict(size=64, activation='elu'),
+                dict(size=64, activation='elu'),
+                dict(size=64, activation='elu'),
+                dict(size=64, activation='elu'),
+                dict(size=64, activation='elu'),
+                dict(size=64, activation='elu'),
             ],
             dense_layers=[
                 dict(size=128, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=32, activation='relu'),
+                dict(size=128, activation='elu'),
+                dict(size=128, activation='elu'),
             ]
         ),
         rl_config=dict(
@@ -541,28 +580,29 @@ if __name__ == '__main__':
                 # ),
                 type='DecayEpsilon',
                 config=dict(
-                    epsilon_start=0.9,
-                    epsilon_end=0.05,
-                    epsilon_decay=1000
+                    epsilon_start=0.5,
+                    epsilon_end=0.01,
+                    epsilon_decay=3000
                 )
             ),
             heuristics=list(),
             max_q=dict(
-                action_gradient_step_count=7,
-                action_optimizer_lr=1e-4,
+                action_gradient_step_count=100,
+                action_optimizer_lr=1e-3,
             ),
             gamma=0.95,
-            tau=0.01,
             batch_size=512,
             buffer_size=50000,
-            num_episodes=10000
+            num_episodes=1000
         ),
         training_config=dict(
-            num_agents=27,
-            num_training_per_epoch=4,
+            num_agents=35,
+            num_training_per_epoch=8,
             run_id=run_id,
-            agent_gpu_memory=256,
-            trainer_gpu_memory=256,
+            agent_gpu_memory=512,
+            trainer_gpu_memory=512,
+            logdir=f'logs/{run_id}',
+            checkpoint_interval=10
         ),
     )
 
@@ -576,7 +616,7 @@ if __name__ == '__main__':
     logger.info(f'Starting run {run_id}...')
 
     config['rl_config']['heuristics'] = [
-        GreedyRiderVector(config['env_config']['epsilon'], config['env_config']['norm']),
+        # GreedyRiderVector(config['env_config']['epsilon'], config['env_config']['norm']),
         Random((76,), config['env_config']['norm'], config['env_config']['epsilon'], config['env_config']['frac'],
                'discrete'),
         Zero((76,)),
@@ -588,4 +628,4 @@ if __name__ == '__main__':
         manager.train()
     except BaseException as e:
         logger.exception(f'Exception {e}')
-        manager.killall()
+    manager.killall()
