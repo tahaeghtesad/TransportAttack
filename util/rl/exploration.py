@@ -34,3 +34,20 @@ class ConstantEpsilon:
 
     def get_current_epsilon(self):
         return self.epsilon
+
+
+class NoiseDecay:
+    def __init__(self, noise_start, noise_end, noise_decay):
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.noise_start = noise_start
+        self.noise_end = noise_end
+        self.noise_decay = noise_decay
+        self.step = 0
+
+    def __call__(self):
+        self.step += 1
+        return self.get_current_noise()
+
+    def get_current_noise(self):
+        return self.noise_end + (self.noise_start - self.noise_end) * math.exp(
+            -1. * self.step / self.noise_decay)

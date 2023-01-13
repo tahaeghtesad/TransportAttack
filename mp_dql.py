@@ -9,7 +9,7 @@ import tensorflow_addons as tfa
 from tqdm import tqdm
 
 import util.rl.exploration
-from attack_heuristics import Random, Zero
+from attack_heuristics import Random, Zero, GreedyRiderVector
 from util.rl.experience_replay import ExperienceReplay
 from util.tf.gcn import GraphConvolutionLayer
 from util.tf.normalizers import LNormOptimizerLayer
@@ -20,7 +20,8 @@ from util.visualize import Timer
 
 
 @tf.function
-def get_optimal_action_and_value(actions, states, action_dim, model, action_gradient_step_count, action_optimizer, norm, epsilon):
+def get_optimal_action_and_value(actions, states, action_dim, model, action_gradient_step_count, action_optimizer, norm,
+                                 epsilon):
     # actions.assign(tf.random.normal((states.shape[0], action_dim)))
     # before = model([states, actions])
     # histogram = np.zeros(action_gradient_step_count)
@@ -80,6 +81,7 @@ def get_q_model(env, config):
 class Agent(Process):
     def __init__(self, index, config, pipe) -> None:
         super().__init__(name=f'Agent-{index}')
+        self.noise = None
         self.pipe = pipe
         self.config = config
         self.finished = False
@@ -115,8 +117,10 @@ class Agent(Process):
         self.env = TransportationNetworkEnvironment(self.config['env_config'])
         self.logger.info(f'Initializing model.')
         self.model = get_q_model(self.env, self.config)
-        self.actions = tf.Variable(tf.random.normal((1, self.env.action_space.shape[0])), name=f'action_agent-{self.index}')
-        self.action_optimizer = tf.keras.optimizers.Adam(learning_rate=self.config['rl_config']['max_q']['action_optimizer_lr'])
+        self.actions = tf.Variable(tf.random.normal((1, self.env.action_space.shape[0])),
+                                   name=f'action_agent-{self.index}')
+        self.action_optimizer = tf.keras.optimizers.Adam(
+            learning_rate=self.config['rl_config']['max_q']['action_optimizer_lr'])
         self.logger.info(f'Initializing exploration strategy.')
         # if self.config['rl_config']['exploration']['type'] == 'constant':
         #     self.epsilon = ConstantEpsilon(self.config['rl_config']['exploration']['config']['value'])
@@ -129,6 +133,8 @@ class Agent(Process):
         #     raise ValueError('Unknown epsilon configuration.')
         self.epsilon = getattr(util.rl.exploration, self.config['rl_config']['exploration']['type']) \
             (**self.config['rl_config']['exploration']['config'])
+
+        self.noise = util.rl.exploration.NoiseDecay(**self.config['rl_config']['exploration_noise'])
 
         self.logger.info(f'Agent {self.index} started.')
         while not self.finished:
@@ -167,8 +173,6 @@ class Agent(Process):
         while not done:
             if self.epsilon():
                 action = np.random.choice(self.config['rl_config']['heuristics']).predict(obs)
-                action += np.random.normal(0, 1, size=action.shape)
-                action /= np.linalg.norm(action, ord=self.config['env_config']['norm'])
             else:
                 actions, _ = \
                     get_optimal_action_and_value(
@@ -182,6 +186,11 @@ class Agent(Process):
                         self.config['env_config']['epsilon']
                     )
                 action = actions[0]
+
+            action += np.random.normal(0, self.noise(), size=action.shape)
+            action = self.config['env_config']['epsilon'] * action / np.linalg.norm(action,
+                                                                                    ord=self.config['env_config'][
+                                                                                        'norm'])
 
             next_obs, reward, done, _ = self.env.step(action)
             next_action = self.config['rl_config']['heuristics'][0].predict(next_obs)
@@ -208,6 +217,7 @@ class Agent(Process):
             discounted_reward=discounted_rewards,
             episode_length=count,
             epsilon=self.epsilon.get_current_epsilon(),
+            exploration_noise=self.noise.get_current_noise(),
             time=datetime.now() - start_time
         )
 
@@ -298,8 +308,11 @@ class Trainer(Process):
         self.logger.info(f'Initializing trainer model.')
         self.model = get_q_model(self.env, self.config)
         self.model.summary()
-        self.actions = tf.Variable(tf.random.normal((self.config['rl_config']['batch_size'], self.env.action_space.shape[0])), name='action_optimizer')
-        self.action_optimizer = tf.keras.optimizers.Adam(learning_rate=self.config['rl_config']['max_q']['action_optimizer_lr'])
+        self.actions = tf.Variable(
+            tf.random.normal((self.config['rl_config']['batch_size'], self.env.action_space.shape[0])),
+            name='action_optimizer')
+        self.action_optimizer = tf.keras.optimizers.Adam(
+            learning_rate=self.config['rl_config']['max_q']['action_optimizer_lr'])
         self.logger.info(f'Trainer initialized.')
 
     def store_model(self):
@@ -459,6 +472,8 @@ class Manager:
                 self.log_scalar('rl/experience_replay_buffer_size', experience_replay_buffer_size, self.training_step)
                 self.log_scalar('rl/epsilon', np.average([info['epsilon'] for info in infos]),
                                 self.training_step)
+                self.log_scalar('rl/exploration_noise', np.average([info['exploration_noise'] for info in infos]),
+                                self.training_step)
                 self.log_scalar('env/reward', np.average([info['cumulative_reward'] for info in infos]),
                                 self.training_step)
                 self.log_histogram('env/episode_lengths', [info['episode_length'] for info in infos],
@@ -585,10 +600,15 @@ if __name__ == '__main__':
                     epsilon_decay=3000
                 )
             ),
+            exploration_noise=dict(
+                noise_start=3,
+                noise_end=0.01,
+                noise_decay=3000
+            ),
             heuristics=list(),
             max_q=dict(
                 action_gradient_step_count=100,
-                action_optimizer_lr=1e-3,
+                action_optimizer_lr=1e-2,
             ),
             gamma=0.95,
             batch_size=512,
@@ -616,7 +636,7 @@ if __name__ == '__main__':
     logger.info(f'Starting run {run_id}...')
 
     config['rl_config']['heuristics'] = [
-        # GreedyRiderVector(config['env_config']['epsilon'], config['env_config']['norm']),
+        GreedyRiderVector(config['env_config']['epsilon'], config['env_config']['norm']),
         Random((76,), config['env_config']['norm'], config['env_config']['epsilon'], config['env_config']['frac'],
                'discrete'),
         Zero((76,)),
