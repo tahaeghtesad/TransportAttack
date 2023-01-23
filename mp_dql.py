@@ -10,19 +10,21 @@ from tqdm import tqdm
 
 import util.rl.exploration
 from attack_heuristics import Random, Zero, GreedyRiderVector
-from util.rl.experience_replay import ExperienceReplay
-from util.tf.gcn import GraphConvolutionLayer
-from util.tf.normalizers import LNormOptimizerLayer
 from transport_env.NetworkEnv import TransportationNetworkEnvironment
 from transport_env.model import Trip
 from util import visualize
+from util.rl.experience_replay import ExperienceReplay
+from util.tf.gcn import GraphConvolutionLayer
 from util.visualize import Timer
 
 
 @tf.function
 def get_optimal_action_and_value(actions, states, action_dim, model, action_gradient_step_count, action_optimizer, norm,
                                  epsilon):
-    # actions.assign(tf.random.normal((states.shape[0], action_dim)))
+    actions.assign(tf.random.normal(actions.shape))
+    normalized, _ = tf.linalg.normalize(actions, axis=1, ord=norm)
+    actions.assign(epsilon * normalized)
+
     # before = model([states, actions])
     # histogram = np.zeros(action_gradient_step_count)
     # action_optimizer = tf.keras.optimizers.Adam(learning_rate=action_optimizer_lr)
@@ -33,7 +35,8 @@ def get_optimal_action_and_value(actions, states, action_dim, model, action_grad
 
         # grads = tape.gradient(q_value, [actions])
         grads = tf.gradients(-tf.reduce_mean(model([states, actions])), [actions])[0]
-        actions.assign_add(grads * action_optimizer.lr)
+        # actions.assign_add(grads * action_optimizer.lr)
+        action_optimizer.apply_gradients([(grads, actions)])
         normalized, _ = tf.linalg.normalize(actions, axis=1, ord=norm)
         actions.assign(epsilon * normalized)
         # action_optimizer.apply_gradients(zip(grads, actions))
@@ -157,6 +160,10 @@ class Agent(Process):
                 elif message['type'] == 'close':
                     self.logger.debug(f'Agent {self.index} received close message.')
                     self.finished = True
+                elif message['type'] == 'test':
+                    self.logger.debug(f'Agent {self.index} received test message.')
+                    stat = self.test_trained_model()
+                    self.pipe.send(dict(type='test', stat=stat))
             except Exception as e:
                 self.logger.exception(e)
                 self.pipe.send(dict(type='error', error=str(e)))
@@ -218,6 +225,40 @@ class Agent(Process):
             episode_length=count,
             epsilon=self.epsilon.get_current_epsilon(),
             exploration_noise=self.noise.get_current_noise(),
+            time=datetime.now() - start_time
+        )
+
+    def test_trained_model(self):
+        start_time = datetime.now()
+        obs = self.env.reset()
+        done = False
+        count = 0
+        rewards = 0
+        discounted_rewards = 0
+        # action = self.heuristics[0].predict(obs)
+        while not done:
+            actions, _ = \
+                get_optimal_action_and_value(
+                    self.actions,
+                    np.expand_dims(obs, axis=0),
+                    self.env.action_space.sample().shape[0],
+                    self.model,
+                    self.config['rl_config']['max_q']['action_gradient_step_count'],
+                    self.action_optimizer,
+                    self.config['env_config']['norm'],
+                    self.config['env_config']['epsilon']
+                )
+            action = actions[0]
+            obs, reward, done, _ = self.env.step(action)
+            count += 1
+            rewards += reward
+            discounted_rewards += reward * self.config['rl_config']['gamma'] ** count
+
+        return dict(
+            cumulative_reward=rewards,
+            average_reward=rewards / count,
+            discounted_reward=discounted_rewards,
+            episode_length=count,
             time=datetime.now() - start_time
         )
 
@@ -284,11 +325,19 @@ class Trainer(Process):
         current_lr = self.model.optimizer._decayed_lr(tf.float32).numpy() if callable(
             getattr(self.model.optimizer, '_decayed_lr', None)) else self.model.optimizer.lr.numpy()
 
+        self.training_step += 1
+
+        zero_q = self.model([next_states, np.zeros(next_actions.shape)])
+        greedy_q = self.model([next_states, next_actions])
+
         return dict(
             loss=loss.numpy(),
             r2=r2.result().numpy(),
             lr=current_lr,
             gamma=self.config['rl_config']['gamma'],
+            #Difference of Greedy action q-value to max-q action q-value
+            diff_to_greedy=np.mean(q_values - zero_q),
+            diff_to_zero=np.mean(q_values - greedy_q),
         )
 
     def init(self):
@@ -316,13 +365,13 @@ class Trainer(Process):
         self.logger.info(f'Trainer initialized.')
 
     def store_model(self):
-        path = f'{self.config["training_config"]["logdir"]}/weights-{self.training_step}.h5'
+        path = f'logs/{self.config["training_config"]["run_id"]}/weights-{self.training_step}.h5'
         self.logger.debug(f'Storing model to {path}')
         self.model.save_weights(path)
 
     def load_model(self, run_id, step):
-        self.logger.info(f'Loading model from {self.config["training_config"]["logdir"]}/weights-{step}.h5')
-        self.model.load_weights(f'{self.config["training_config"]["logdir"]}/weights-{step}.h5')
+        self.logger.info(f'Loading model from logs/{run_id}/weights-{step}.h5')
+        self.model.load_weights(f'logs/{run_id}/weights-{step}.h5')
 
     def run(self) -> None:
         self.init()
@@ -449,11 +498,11 @@ class Manager:
         total_samples = 0
         for _ in (pbar := tqdm(range(self.config['rl_config']['num_episodes']))):
             with Timer('GetTrajectories'):
-                for agent in self.agents:
+                for i, agent in enumerate(self.agents):
                     agent['pipe'].send(dict(
                         type='get_trajectories'
                     ))
-                    pbar.set_description(f'Requesting Trajectories')
+                    pbar.set_description(f'Requesting Trajectories {i}/{len(self.agents)}')
                 infos = []
                 for i, agent in enumerate(self.agents):
                     pbar.set_description(f'Received {i}/{len(self.agents)} trajectories')
@@ -486,6 +535,7 @@ class Manager:
                                    self.training_step)
                 self.log_histogram('env/time', [info['time'].total_seconds() for info in infos],
                                    self.training_step)
+                self.log_scalar('training/epoch_time', np.average([info['time'].total_seconds() for info in infos]), self.training_step)
 
             with Timer('UpdateModel'):
                 for i in range(self.config['training_config']['num_training_per_epoch']):
@@ -511,6 +561,8 @@ class Manager:
                     self.log_scalar('rl/gamma', stats['gamma'], self.training_step)
                     self.log_scalar('rl/r2', stats['r2'], self.training_step)
                     self.log_scalar('training/train_time', duration, self.training_step)
+                    self.log_scalar('max_q/diff_to_zero', stats['diff_to_zero'], self.training_step)
+                    self.log_scalar('max_q/diff_to_greedy', stats['diff_to_greedy'], self.training_step)
 
                     self.training_step += 1
 
@@ -525,7 +577,23 @@ class Manager:
                 for agent in self.agents:
                     assert agent['pipe'].recv()['type'] == 'weights_updated'
 
-                if self.training_step % self.config['training_config']['checkpoint_interval'] == 0:
+                if ((self.training_step - 1) // self.config['training_config']['num_training_per_epoch']) % self.config['training_config']['checkpoint_interval'] == 0:
+                    self.logger.debug(f'Checkpointing')
+
+                    for agent in self.agents:
+                        agent['pipe'].send(dict(
+                            type='test'
+                        ))
+
+                    stats = []
+                    for i, agent in enumerate(self.agents):
+                        pbar.set_description(f'Testing {i}/{len(self.agents)}.')
+                        msg = agent['pipe'].recv()
+                        assert msg['type'] == 'test'
+                        stats.append(msg['stat'])
+
+                    self.log_scalar('env/test_reward', np.average([stat['cumulative_reward'] for stat in stats]), self.training_step)
+
                     self.trainer_pipe.send(dict(
                         type='store_model'
                     ))
@@ -543,7 +611,7 @@ if __name__ == '__main__':
             horizon=50,
             epsilon=30,
             norm=2,
-            frac=0.25,
+            frac=0.1,
             num_sample=20,
             render_mode=None,
             reward_multiplier=1.0,
@@ -582,33 +650,32 @@ if __name__ == '__main__':
                 dict(size=64, activation='elu'),
             ],
             dense_layers=[
-                dict(size=128, activation='elu'),
-                dict(size=128, activation='elu'),
-                dict(size=128, activation='elu'),
+                dict(size=64, activation='elu'),
+                dict(size=64, activation='elu'),
             ]
         ),
         rl_config=dict(
             exploration=dict(
-                # type='ConstantEpsilon',
-                # config=dict(
-                #     value=0.2
-                # ),
-                type='DecayEpsilon',
+                type='ConstantEpsilon',
                 config=dict(
-                    epsilon_start=0.5,
-                    epsilon_end=0.01,
-                    epsilon_decay=3000
-                )
+                    epsilon=0.1
+                ),
+                # type='DecayEpsilon',
+                # config=dict(
+                #     epsilon_start=0.4,
+                #     epsilon_end=0.1,
+                #     epsilon_decay=2000
+                # )
             ),
             exploration_noise=dict(
-                noise_start=3,
-                noise_end=0.01,
-                noise_decay=3000
+                noise_start=20,
+                noise_end=0.1,
+                noise_decay=4000
             ),
             heuristics=list(),
             max_q=dict(
-                action_gradient_step_count=100,
-                action_optimizer_lr=1e-2,
+                action_gradient_step_count=200,
+                action_optimizer_lr=1,
             ),
             gamma=0.95,
             batch_size=512,
@@ -617,12 +684,12 @@ if __name__ == '__main__':
         ),
         training_config=dict(
             num_agents=35,
-            num_training_per_epoch=8,
+            num_training_per_epoch=4,
             run_id=run_id,
             agent_gpu_memory=512,
             trainer_gpu_memory=512,
             logdir=f'logs/{run_id}',
-            checkpoint_interval=10
+            checkpoint_interval=5
         ),
     )
 
@@ -643,7 +710,6 @@ if __name__ == '__main__':
     ]
 
     manager = Manager(config)
-
     try:
         manager.train()
     except BaseException as e:
