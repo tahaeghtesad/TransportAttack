@@ -1,4 +1,5 @@
 import logging
+import random
 import sys
 from datetime import datetime
 from multiprocessing import Process, Pipe
@@ -24,7 +25,8 @@ def calculate_gae(rewards, state_val, next_state_val, dones, gamma, lam):
         delta = rewards[i] + gamma * next_state_val[i][0] * (1 - dones[i]) - state_val[i]
         gae = delta + gamma * lam * (1 - dones[i]) * gae
         gae_list = gae_list.write(i, gae)
-    return gae_list.stack()
+    gae_list = gae_list.stack()
+    return tf.linalg.normalize(gae_list, ord=2)[0]
 
 
 def get_vf(env, config):
@@ -51,7 +53,7 @@ def get_vf(env, config):
     model = tf.keras.Model(inputs=input, outputs=output)
 
     model.compile(
-        optimizer=tf.keras.optimizers.get(config['model_config']['optimizer']),
+        optimizer=tf.keras.optimizers.get(config['model_config']['optimizer_vf']),
     )
 
     return model
@@ -81,7 +83,7 @@ def get_policy(env, config):
     model = tf.keras.Model(inputs=input, outputs=output)
 
     model.compile(
-        optimizer=tf.keras.optimizers.get(config['model_config']['optimizer'])
+        optimizer=tf.keras.optimizers.get(config['model_config']['optimizer_policy'])
     )
 
     return model
@@ -101,6 +103,7 @@ class Agent(Process):
         self.env = None
 
         self.logger.info(f'Agent {self.index} created.')
+        self.heuristics = self.config['rl_config']['heuristics']
 
     def run(self) -> None:
         self.logger.info(f'Initializing Agent {self.index}')
@@ -155,16 +158,15 @@ class Agent(Process):
         discounted_rewards = 0
         experiences = []
         while not done:
-            action_logits = self.policy(tf.expand_dims(obs, axis=0))
-            assert not np.isnan(action_logits).any(), f'Action_Logits has nan: {action_logits}'
+            if random.random() < 0.2:
+                action = random.sample(self.heuristics, 1)[0].predict(obs)
+            else:
+                action_logits = self.policy(tf.expand_dims(obs, axis=0))
+                assert not np.isnan(action_logits).any(), f'Action_Logits has nan: {action_logits}'
 
-            means, stds = tf.split(action_logits, 2, axis=1)
-            distribution = tfp.distributions.MultivariateNormalDiag(loc=means, scale_diag=stds)
-            action = distribution.sample()
-            unscaled_action = action.numpy()[0]
-            action = tf.nn.relu(unscaled_action).numpy()
-            norm = np.linalg.norm(action, ord=self.config['env_config']['norm'])
-            action = self.config['env_config']['epsilon'] * np.divide(action, norm, where=norm != 0)
+                means, stds = tf.split(action_logits, 2, axis=1)
+                distribution = tfp.distributions.MultivariateNormalDiag(loc=means, scale_diag=stds)
+                action = distribution.sample()
 
             obs, reward, done, _ = self.env.step(action)
 
@@ -172,7 +174,7 @@ class Agent(Process):
             if not done or (self.env.time_step < self.config['env_config']['horizon']):
                 experiences.append(dict(
                     state=obs,
-                    action=unscaled_action,
+                    action=action,
                     reward=reward,
                     next_state=obs,
                     done=done
@@ -203,10 +205,6 @@ class Agent(Process):
             means, stds = tf.split(action_logits, 2, axis=1)
             distribution = tfp.distributions.MultivariateNormalDiag(loc=means, scale_diag=tf.zeros(stds.shape))
             action = distribution.sample()
-            action = tf.nn.relu(action)
-            action = tf.nn.relu(action).numpy()[0]
-            norm = np.linalg.norm(action, ord=self.config['env_config']['norm'])
-            action = self.config['env_config']['epsilon'] * np.divide(action, norm, where=norm != 0)
 
             obs, reward, done, _ = self.env.step(action)
             count += 1
@@ -246,24 +244,20 @@ class Trainer(Process):
         self.beta = None
 
         self.training_step = 0
+        self.r2 = None
 
-    def update_model(self, samples):
-        states = np.array([sample['state'] for sample in samples], dtype=np.float32)
-        actions = np.array([sample['action'] for sample in samples], dtype=np.float32)
-        rewards = np.array([sample['reward'] for sample in samples], dtype=np.float32)
-        next_states = np.array([sample['next_state'] for sample in samples], dtype=np.float32)
-        dones = np.array([sample['done'] for sample in samples], dtype=np.float32)
+    def update_model(self, states, actions, rewards, next_states, dones):
 
-        old_action_logits = self.policy(states)
+        old_action_logits = self.policy(states, training=False)
         old_means, old_stds = tf.split(old_action_logits, 2, axis=1)
         old_distributions = tfp.distributions.MultivariateNormalDiag(loc=old_means, scale_diag=old_stds)
         old_log_probs = old_distributions.log_prob(actions)
 
-        next_state_val = self.value_function(next_states)
+        next_state_val = self.value_function(next_states, training=False)
 
         with tf.GradientTape(persistent=True) as tape:
-            state_val = self.value_function(states)
-            action_logits = self.policy(states)
+            state_val = self.value_function(states, training=True)
+            action_logits = self.policy(states, training=True)
             means, stds = tf.split(action_logits, 2, axis=1)
             distribution = tfp.distributions.MultivariateNormalDiag(loc=means, scale_diag=stds)
             log_probs = distribution.log_prob(actions)
@@ -274,8 +268,8 @@ class Trainer(Process):
                                 self.config['rl_config']['lam'])
             entropy = distribution.entropy()
 
-            vf_target = tf.expand_dims(rewards, axis=0) + self.config['rl_config']['gamma'] * next_state_val * (
-                        1 - tf.expand_dims(dones, axis=0))
+            vf_target = tf.expand_dims(rewards, axis=1) + self.config['rl_config']['gamma'] * next_state_val * (
+                    1 - tf.expand_dims(dones, axis=1))
 
             l_vf = tf.reduce_mean(
                 tf.square(vf_target - state_val))
@@ -285,7 +279,9 @@ class Trainer(Process):
             l_kl = tf.reduce_mean(kl)
             l_entropy = - tf.reduce_mean(entropy)
 
-            surrogate = self.beta * l_kl + l_clip + self.config['rl_config']['c2'] * l_entropy + \
+            surrogate = self.beta * l_kl + \
+                        l_clip + \
+                        self.config['rl_config']['c2'] * l_entropy + \
                         self.config['rl_config']['c1'] * l_vf
 
         policy_grads = tape.gradient(surrogate, self.policy.trainable_variables)
@@ -294,34 +290,21 @@ class Trainer(Process):
         self.policy.optimizer.apply_gradients(zip(policy_grads, self.policy.trainable_variables))
         self.value_function.optimizer.apply_gradients(zip(value_grads, self.value_function.trainable_variables))
 
-        if l_kl < self.config['rl_config']['target_beta'] / 1.5:
-            self.beta /= 2
-        elif l_kl > self.config['rl_config']['target_beta'] * 1.5:
-            self.beta *= 2
+        # if l_kl < self.config['rl_config']['target_beta'] / 1.5:
+        #     self.beta /= 2
+        # elif l_kl > self.config['rl_config']['target_beta'] * 1.5:
+        #     self.beta *= 2
 
-        r2 = tfa.metrics.RSquare()
-        r2.update_state(vf_target, state_val)
+        # r2 = tfa.metrics.RSquare(dtype=tf.float32)
+        self.r2.update_state(vf_target, state_val)
 
         self.training_step += 1
 
-        policy_lr = self.policy.optimizer._decayed_lr(tf.float32).numpy() if callable(
-            getattr(self.policy.optimizer, '_decayed_lr', None)) else self.policy.optimizer.lr.numpy()
-
-        vf_lr = self.value_function.optimizer._decayed_lr(tf.float32).numpy() if callable(
-            getattr(self.value_function.optimizer, '_decayed_lr', None)) else self.value_function.optimizer.lr.numpy()
-
         return dict(
-            vf_loss=l_vf.numpy(),
-            gae=tf.reduce_mean(gae).numpy(),
-            entropy=l_entropy.numpy(),
-            vf_r2=r2.result().numpy(),
-            vf_lr=policy_lr,
-            policy_lr=vf_lr,
-            epsilon=self.config['rl_config']['epsilon'],
-            gamma=self.config['rl_config']['gamma'],
-            lam=self.config['rl_config']['lam'],
-            c1=self.config['rl_config']['c1'],
-            c2=self.config['rl_config']['c2'],
+            vf_loss=l_vf,
+            gae=gae,
+            entropy=l_entropy,
+            vf_r2=self.r2.result(),
         )
 
     def init(self):
@@ -346,6 +329,7 @@ class Trainer(Process):
         self.logger.info(f'Trainer initialized.')
 
         self.beta = self.config['rl_config']['initial_beta']
+        self.r2 = tfa.metrics.RSquare(dtype=tf.float32)
 
     def store_model(self):
         policy_path = f'logs/{self.config["training_config"]["run_id"]}/policy-{self.training_step}.h5'
@@ -367,7 +351,32 @@ class Trainer(Process):
             try:
                 if msg['type'] == 'update_model':
                     self.logger.debug(f'Updating model.')
-                    stats = self.update_model(msg['experiences'])
+
+                    samples = msg['experiences']
+
+                    states = np.array([sample['state'] for sample in samples], dtype=np.float32)
+                    actions = np.array([sample['action'] for sample in samples], dtype=np.float32)
+                    rewards = np.array([sample['reward'] for sample in samples], dtype=np.float32)
+                    next_states = np.array([sample['next_state'] for sample in samples], dtype=np.float32)
+                    dones = np.array([sample['done'] for sample in samples], dtype=np.float32)
+
+                    stats = self.update_model(states, actions, rewards, next_states, dones)
+
+                    stats = {k: v.numpy() if isinstance(v, tf.Tensor) else v for k, v in stats.items()}
+
+                    stats['policy_lr'] = self.policy.optimizer._decayed_lr(tf.float32).numpy() if callable(
+                        getattr(self.policy.optimizer, '_decayed_lr', None)) else self.policy.optimizer.lr.numpy()
+
+                    stats['vf_lr'] = self.value_function.optimizer._decayed_lr(tf.float32).numpy() if callable(
+                        getattr(self.value_function.optimizer, '_decayed_lr',
+                                None)) else self.value_function.optimizer.lr.numpy()
+
+                    stats['epsilon'] = self.config['rl_config']['epsilon']
+                    stats['gamma'] = self.config['rl_config']['gamma']
+                    stats['lam'] = self.config['rl_config']['lam']
+                    stats['c1'] = self.config['rl_config']['c1']
+                    stats['c2'] = self.config['rl_config']['c2']
+
                     self.pipe.send(
                         dict(
                             type='model_updated',
@@ -531,8 +540,9 @@ class Manager:
                     new_weights = ack['weights']
                     duration = (datetime.now() - start).total_seconds()
 
+                    self.log_histogram('rl/gae', stats['gae'], self.training_step)
+
                     self.log_scalar('rl/vf_loss', stats['vf_loss'], self.training_step)
-                    self.log_scalar('rl/gae', stats['gae'], self.training_step)
                     self.log_scalar('rl/entropy', stats['entropy'], self.training_step)
                     self.log_scalar('rl/vf_r2', stats['vf_r2'], self.training_step)
                     self.log_scalar('rl/vf_lr', stats['vf_lr'], self.training_step)
@@ -609,47 +619,60 @@ if __name__ == '__main__':
             rewarding_rule='vehicle_count',
         ),
         model_config=dict(
-            optimizer=dict(
+            optimizer_vf=dict(
                 class_name='Adam',
                 config=dict(
-                    # learning_rate=1e-5
-                    learning_rate=dict(
-                        class_name='ExponentialDecay',
-                        config=dict(
-                            initial_learning_rate=1e-4,
-                            decay_steps=400,
-                            decay_rate=0.95
-                        )
-                    )
+                    learning_rate=5e-4
+                    # learning_rate=dict(
+                    #     class_name='ExponentialDecay',
+                    #     config=dict(
+                    #         initial_learning_rate=5e-4,
+                    #         decay_steps=100,
+                    #         decay_rate=0.95
+                    #     )
+                    # )
+                )
+            ),
+            optimizer_policy=dict(
+                class_name='Adam',
+                config=dict(
+                    learning_rate=1e-5
+                    # learning_rate=dict(
+                    #     class_name='ExponentialDecay',
+                    #     config=dict(
+                    #         initial_learning_rate=5e-4,
+                    #         decay_steps=100,
+                    #         decay_rate=0.95
+                    #     )
+                    # )
                 )
             ),
             conv_layers=[
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
+                dict(size=16, activation='elu'),
+                dict(size=16, activation='elu'),
+                dict(size=16, activation='elu'),
+                dict(size=16, activation='elu'),
+                dict(size=16, activation='elu'),
+                dict(size=16, activation='elu'),
+                dict(size=16, activation='elu'),
             ],
             dense_layers=[
                 dict(size=64, activation='elu'),
-                dict(size=64, activation='tanh'),
+                dict(size=64, activation='elu'),
             ]
         ),
         rl_config=dict(
-            gamma=0.95,
-            lam=1.0,
-            epsilon=0.3,
-            c1=0.1,
-            c2=0.1,
-            initial_beta=0.1,
-            target_beta=0.5,
+            gamma=0.97,  # Discount factor
+            lam=0.95,  # GAE lambda
+            epsilon=0.2,  # PPO clip
+            c1=1.0,  # VF loss coefficient
+            c2=0.0,  # Entropy coefficient
+            initial_beta=0.01,  # Initial kl penalty
+            target_beta=0.01,  # Target kl penalty
             num_episodes=1000
         ),
         training_config=dict(
-            num_agents=1,
-            num_training_per_epoch=4,
+            num_agents=31,
             run_id=run_id,
             agent_gpu_memory=512,
             trainer_gpu_memory=512,
@@ -669,8 +692,8 @@ if __name__ == '__main__':
 
     config['rl_config']['heuristics'] = [
         GreedyRiderVector(config['env_config']['epsilon'], config['env_config']['norm']),
-        Random((76,), config['env_config']['norm'], config['env_config']['epsilon'], config['env_config']['frac'],
-               'discrete'),
+        # Random((76,), config['env_config']['norm'], config['env_config']['epsilon'], config['env_config']['frac'],
+        #        'discrete'),
         Zero((76,)),
     ]
 

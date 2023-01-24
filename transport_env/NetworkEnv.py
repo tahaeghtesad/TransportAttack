@@ -91,6 +91,10 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
         if self.finished:
             raise Exception('Previous epoch has ended. Call env.reset() ro reinitialize the network.')
 
+        action = np.maximum(action, 0)
+        action_norm = np.linalg.norm(action, ord=self.config['norm'])
+        action = np.divide(action, action_norm, where=action_norm != 0) * self.config['epsilon']
+
         self.previous_perturbations = action
         self.time_step += 1
 
