@@ -10,7 +10,7 @@ class GraphConvolutionLayer(tf.keras.layers.Layer):
 
     def build(self, input_shape):
         self.kernel = self.add_weight(name='kernel', shape=(input_shape[-1], self.units), initializer='uniform', trainable=True)
-        self.bias = self.add_weight(name='bias', shape=(self.units,), initializer='zeros', trainable=True)
+        self.bias = self.add_weight(name='bias', shape=(self.units,), initializer='uniform', trainable=True)
         self.beta = self.add_weight(name='beta', shape=(self.adj.shape[0],), initializer='uniform', trainable=True)
         super(GraphConvolutionLayer, self).build(input_shape)
 
