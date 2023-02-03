@@ -213,8 +213,6 @@ class GreedyRider(BaseHeuristic):
             action[i] = increase[e] if e in increase else 0
 
         norm = np.linalg.norm(action, self.norm)
-        if norm == 0:
-            self.logger.warning(f'GreedyRider action is zero')
         normalized_action = self.epsilon * np.divide(action, norm, where=norm != 0)
 
         return normalized_action
@@ -241,8 +239,6 @@ class GreedyRiderMatrix(BaseHeuristic):
                 action[i] = obs[e[0] - 1, e[1] - 1]
 
             norm = np.linalg.norm(action, self.norm)
-            if norm == 0:
-                self.logger.warning(f'GreedyRider action is zero')
             normalized_action = self.epsilon * np.divide(action, norm, where=norm != 0)
 
             return normalized_action
@@ -259,8 +255,6 @@ class GreedyRiderVector(BaseHeuristic):
 
         with Timer('GreedyRiderVector.predict.singular'):
             norm = np.linalg.norm(obs[:, 0], self.norm)
-            if norm == 0:
-                self.logger.warning(f'GreedyRider action is zero')
             normalized_action = self.epsilon * np.divide(obs[:, 0], norm, where=norm != 0)
 
             return normalized_action
