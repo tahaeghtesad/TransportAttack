@@ -129,7 +129,11 @@ class Random(BaseHeuristic):
         else:
             raise Exception(f'Invalid "selection" criteria: {self.selection}')
 
-        return action * self.epsilon / np.linalg.norm(action, self.norm)
+        norm = np.linalg.norm(action, self.norm)
+        if norm == 0:
+            self.logger.warning(f'Random {self.selection} action is zero')
+
+        return self.epsilon * np.divide(action, norm, where=norm != 0)
 
 
 class MultiRandom(BaseHeuristic):
@@ -208,7 +212,10 @@ class GreedyRider(BaseHeuristic):
         for i, e in enumerate(reconstructed_graph.edges):
             action[i] = increase[e] if e in increase else 0
 
-        normalized_action = action * self.epsilon / np.linalg.norm(action, self.norm)
+        norm = np.linalg.norm(action, self.norm)
+        if norm == 0:
+            self.logger.warning(f'GreedyRider action is zero')
+        normalized_action = self.epsilon * np.divide(action, norm, where=norm != 0)
 
         return normalized_action
 
@@ -225,16 +232,20 @@ class GreedyRiderMatrix(BaseHeuristic):
         super().predict(obs)
 
         with Timer('GreedyRiderMatrix.predict.singular'):
-            response = np.zeros(self.action_shape)
+            action = np.zeros(self.action_shape)
 
             if np.sum(obs) == 0:
-                return response
+                return action
 
             for i, e in enumerate(self.edges):
-                response[i] = obs[e[0] - 1, e[1] - 1]
+                action[i] = obs[e[0] - 1, e[1] - 1]
 
-            normalized_response = response * self.epsilon / np.linalg.norm(response, self.norm)
-            return normalized_response
+            norm = np.linalg.norm(action, self.norm)
+            if norm == 0:
+                self.logger.warning(f'GreedyRider action is zero')
+            normalized_action = self.epsilon * np.divide(action, norm, where=norm != 0)
+
+            return normalized_action
 
 
 class GreedyRiderVector(BaseHeuristic):
@@ -248,5 +259,8 @@ class GreedyRiderVector(BaseHeuristic):
 
         with Timer('GreedyRiderVector.predict.singular'):
             norm = np.linalg.norm(obs[:, 0], self.norm)
-            normalized_response = self.epsilon * np.divide(obs[:, 0], norm, where=norm != 0)
-            return normalized_response
+            if norm == 0:
+                self.logger.warning(f'GreedyRider action is zero')
+            normalized_action = self.epsilon * np.divide(obs[:, 0], norm, where=norm != 0)
+
+            return normalized_action
