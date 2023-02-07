@@ -1,4 +1,6 @@
 import random
+from collections import deque
+
 import tensorflow as tf
 
 
@@ -6,7 +8,7 @@ class ExperienceReplay:
     def __init__(self, buffer_size, batch_size):
         self.buffer_size = buffer_size
         self.batch_size = batch_size
-        self.buffer = []
+        self.buffer = deque(maxlen=buffer_size)
 
     def add(self, obs, action, reward, next_obs, next_action, done):
         self.buffer.append(
@@ -19,11 +21,8 @@ class ExperienceReplay:
                 done=done
             )
         )
-        if len(self.buffer) > self.buffer_size:
-            self.buffer.pop(0)
 
     def batch_add(self, experiences):
-        self.buffer = self.buffer[max(-self.buffer_size + len(self.buffer) + len(experiences), 0):]
         self.buffer.extend(experiences)
 
     def size(self):
@@ -47,6 +46,7 @@ class ExperienceReplay:
             ret['rewards'].append([e['reward']])
             ret['next_states'].append(e['next_state'])
             ret['dones'].append([e['done']])
-            ret['next_actions'].append(e['next_action'])
+            if 'next_action' in e:
+                ret['next_actions'].append(e['next_action'])
 
         return {k: tf.convert_to_tensor(v, dtype=tf.float32) for k, v in ret.items()}
