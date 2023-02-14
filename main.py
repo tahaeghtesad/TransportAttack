@@ -21,7 +21,7 @@ if __name__ == '__main__':
         city='SiouxFalls',
         horizon=50,
         epsilon=30,
-        norm=2,
+        norm=5,
         frac=0.5,
         num_sample=20,
         render_mode=None,
@@ -34,7 +34,7 @@ if __name__ == '__main__':
             count=100
         ),
         rewarding_rule='vehicle_count',
-        repeat=100
+        repeat=10
         )
 
     logger.info(f'Config: {config}')

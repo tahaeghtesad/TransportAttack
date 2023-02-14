@@ -1,170 +1,116 @@
 import logging
 import sys
+import os
 import traceback
 from datetime import datetime
 from multiprocessing import Process, Pipe
 
+import gymnasium as gym
 import numpy as np
 import tensorflow as tf
-import tensorflow_addons as tfa
 from tqdm import tqdm
 
 import util.rl.exploration
-from attack_heuristics import Random, Zero, GreedyRiderVector
-from transport_env.NetworkEnv import TransportationNetworkEnvironment
-from transport_env.model import Trip
 from util import visualize
 from util.rl.experience_replay import ExperienceReplay
-from util.tf.gcn import GraphConvolutionLayer
 from util.visualize import Timer
-
-# def get_q_model(env, config):
-#     action_shape = env.action_space.sample().shape  # 76
-#     state_shape = env.observation_space.sample().shape  # (76, 2)
-#     adj = env.get_adjacency_matrix()
-#
-#     state_in = tf.keras.layers.Input(shape=state_shape)
-#     action_in = tf.keras.layers.Input(shape=action_shape)
-#     action_reshaped = tf.keras.layers.Reshape((action_shape[0], 1))(action_in)
-#
-#     shared = tf.keras.layers.Concatenate(axis=2)([state_in, action_reshaped])
-#
-#     for l in config['model_config']['conv_layers']:
-#         shared = GraphConvolutionLayer(l['size'], adj, activation=l['activation'])(shared)
-#
-#     shared = tf.keras.layers.Flatten()(shared)
-#
-#     for l in config['model_config']['dense_layers']:
-#         shared = tf.keras.layers.Dense(8, activation='relu')(shared)
-#
-#     output = tf.keras.layers.Dense(1)(shared)
-#     model = tf.keras.Model(inputs=[state_in, action_in], outputs=output)
-#
-#     model.compile(
-#         optimizer=tf.keras.optimizers.get(config['model_config']['optimizer']),
-#         loss=tf.keras.losses.get(config['model_config']['loss']),
-#         metrics=[tfa.metrics.RSquare()]
-#     )
-#
-#     return model
+from util.tf.math import r2
 
 
-class QModel(tf.keras.Model):
-    def __init__(self, env, config, name):
-        super().__init__(name=name)
-        action_shape = env.action_space.sample().shape  # (76, )
-        state_shape = env.observation_space.sample().shape  # (76, 2)
-        adj = env.get_adjacency_matrix()
+def get_q_model(env, config, name):
+    action_shape = env.action_space.sample().shape  # (76, )
+    state_shape = env.observation_space.sample().shape  # (76, 2)
 
-        self.action_reshaped = tf.keras.layers.Reshape((action_shape[0], 1))
-        self.concatenate = tf.keras.layers.Concatenate(axis=2)
-        self.shared = [GraphConvolutionLayer(l['size'], adj, activation=l['activation']) for l in config['model_config']['conv_layers']]
-        self.flattened = tf.keras.layers.Flatten()
-        self.deep = [tf.keras.layers.Dense(l['size'], activation=l['activation']) for l in config['model_config']['dense_layers']]
-        self.output_ = tf.keras.layers.Dense(1)
+    state_in = tf.keras.Input(shape=state_shape)
+    action_in = tf.keras.Input(shape=action_shape)
 
-        self.loss = tf.keras.losses.get(config['model_config']['loss'])
-        self.r2 = tfa.metrics.RSquare()
-        self.optimizer = tf.keras.optimizers.get(config['model_config']['optimizer'])
+    concatenate = tf.keras.layers.Concatenate(axis=1)([state_in, action_in])
+    flattened = tf.keras.layers.Flatten()(concatenate)
+    for l in config['model_config']['dense_layers']:
+        flattened = tf.keras.layers.Dense(l['size'], activation=l['activation'])(flattened)
+    output = tf.keras.layers.Dense(1)(flattened)
 
-    def call(self, inputs, training=None, mask=None):
-        state_in, action_in = inputs
-        action_reshaped = self.action_reshaped(action_in)
-        concatenate = self.concatenate([state_in, action_reshaped])
-
-        for layer in self.shared:
-            concatenate = layer(concatenate)
-
-        flattened = self.flattened(concatenate)
-
-        for layer in self.deep:
-            flattened = layer(flattened)
-
-        return self.output_(flattened)
-
-    def train_step(self, data):
-        states, actions, target_q_values = data
-
-        with tf.GradientTape() as tape:
-            q_values = self([states, actions], training=True)
-            loss = self.loss(target_q_values, q_values)
-
-        gradients = tape.gradient(loss, self.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
-        self.r2.update_state(target_q_values, q_values)
-
-        current_lr = self.optimizer._decayed_lr(tf.float32) if callable(
-            getattr(self.optimizer, '_decayed_lr', None)) else self.optimizer._lr(tf.float32)
-
-        return {'loss': tf.reduce_mean(loss), 'r2': self.r2.result(), 'lr': current_lr}
+    model = tf.keras.Model(inputs=[state_in, action_in], outputs=output, name=name)
+    model.compile(
+        loss=tf.keras.losses.get(config['model_config']['loss']),
+        optimizer=tf.keras.optimizers.get(config['model_config']['q_optimizer']),
+    )
+    return model
 
 
-class DoubleQModule(tf.keras.Model):
-    def __init__(self, env, config, purpose='agent'):  # purpose can be either 'agent' or 'target'
-        super().__init__(name='double_q_module')
-        self.q_model = QModel(env, config, name='q_model')
-        self.target_q_model = QModel(env, config, name='target_q_model')
-        self.__sync_weights()
+def get_policy_model(env, config, name):
+    action_shape = env.action_space.sample().shape[0]  # (76, )
+    state_shape = env.observation_space.sample().shape[0]  # (76, 2)
+
+    state_in = tf.keras.Input(shape=state_shape)
+    flattened = tf.keras.layers.Flatten()(state_in)
+
+    for l in config['model_config']['dense_layers']:
+        flattened = tf.keras.layers.Dense(l['size'], activation=l['activation'])(flattened)
+
+    output = tf.keras.layers.Dense(action_shape, activation='tanh')(flattened)
+
+    model = tf.keras.Model(inputs=state_in, outputs=output, name=name)
+    model.compile(
+        loss=tf.keras.losses.get(config['model_config']['loss']),
+        optimizer=tf.keras.optimizers.get(config['model_config']['policy_optimizer']),
+    )
+    return model
+
+
+class CAQLModel:
+    def __init__(self, env, config):  # purpose can be either 'agent' or 'target'
+        self.q_model = get_q_model(env, config, name='q_model')
+        self.target_q_model = get_q_model(env, config, name='target_q_model')
+        self.policy = get_policy_model(env, config, name='policy')
+        self.target_policy = get_policy_model(env, config, name='target_policy')
+        self.sync_weights()
         self.config = config
         self.env = env
 
-        self.action_optimizer = tf.keras.optimizers.Adam(learning_rate=config['rl_config']['max_q']['action_optimizer_lr'])
-        if purpose == 'agent':
-            self.stock_actions = tf.Variable(tf.zeros((1, env.action_space.sample().shape[0])))
-        else:
-            self.stock_actions = tf.Variable(tf.zeros((config['rl_config']['batch_size'], env.action_space.sample().shape[0])))
-
-    def call(self, inputs, training=None, mask=None):
-        return self.target_q_model(inputs, training, mask)
-
-    def __sync_weights(self):
+    def sync_weights(self):
         self.q_model.set_weights(self.target_q_model.get_weights())
+        self.policy.set_weights(self.target_policy.get_weights())
 
-    def summary(
-        self,
-        line_length=None,
-        positions=None,
-        print_fn=None,
-        expand_nested=False,
-        show_trainable=False,
-        layer_range=None,
-    ):
-        raise NotImplementedError('Summary is not implemented for DoubleQModule')
+    def summary(self, print_fn):
+        self.q_model.summary(print_fn=print_fn)
+        self.target_q_model.summary(print_fn=print_fn)
+        self.policy.summary(print_fn=print_fn)
 
     @tf.function
-    def train_step(self, data):
-        states, actions, next_states, rewards, dones = data
-        _, target_q_values = self.get_optimal_action_and_value(next_states)
-        target_q_values = rewards + (1 - dones) * self.config['rl_config']['gamma'] * target_q_values
-        stats = self.q_model.train_step([states, actions, target_q_values])
-        self.update_target_model()
-        return stats
+    def train(self, states, actions, next_states, rewards, dones):
+        # Update Critic
+        y = rewards + (1 - dones) * self.config['rl_config']['gamma'] * \
+            self.target_q_model([next_states, self.target_policy(next_states, training=True)], training=True)
+        critic_value = self.q_model([states, actions], training=True)
+        critic_loss = self.q_model.loss(y, critic_value)
+        critic_grads = tf.gradients(critic_loss, self.q_model.trainable_variables)
+        self.q_model.optimizer.apply_gradients(zip(critic_grads, self.q_model.trainable_variables))
 
+        # Update Actor
+        policy_actions = self.policy(states, training=True)
+        actor_loss = -tf.reduce_mean(self.q_model([states, policy_actions], training=True))
+        actor_grads = tf.gradients(actor_loss, self.policy.trainable_variables)
+        self.policy.optimizer.apply_gradients(zip(actor_grads, self.policy.trainable_variables))
+
+        # Update Target Networks
+        self.update_target_model()
+
+        return dict(
+            average_actions=tf.reduce_mean(self.policy(states, training=False), axis=1),
+            q=dict(loss=critic_loss, r2=r2(y, critic_value), max_q=tf.reduce_max(y), min_q=tf.reduce_min(y), mean_q=tf.reduce_mean(y)),
+            policy=dict(loss=actor_loss, r2=r2(self.target_policy(states, training=False), self.policy(states, training=False)))
+        )
+
+    @tf.function
     def update_target_model(self):
         for var, target_var in zip(self.q_model.trainable_variables, self.target_q_model.trainable_variables):
-            target_var.assign(self.config['rl_config']['tau'] * var + (1 - self.config['rl_config']['tau']) * target_var)
+            target_var.assign(
+                self.config['rl_config']['tau'] * var + (1 - self.config['rl_config']['tau']) * target_var)
 
-    def update_weights(self, target_weights):
-        self.target_q_model.set_weights(target_weights)
-
-    def get_weights(self):
-        return self.target_q_model.get_weights()
-
-    @tf.function
-    def get_optimal_action_and_value(self, states):
-        self.stock_actions.assign(tf.random.normal(self.stock_actions.shape))
-        normalized, _ = tf.linalg.normalize(self.stock_actions, axis=1, ord=self.config['env_config']['norm'])
-        self.stock_actions.assign(self.config['env_config']['epsilon'] * normalized)
-
-        for i in range(self.config['rl_config']['max_q']['action_gradient_step_count']):
-            grads = tf.gradients(-tf.reduce_mean(self.target_q_model([states, self.stock_actions], training=False)), [self.stock_actions])[0]
-            self.action_optimizer.apply_gradients([(grads, self.stock_actions)])
-            normalized, _ = tf.linalg.normalize(self.stock_actions, axis=1, ord=self.config['env_config']['norm'])
-            self.stock_actions.assign(self.config['env_config']['epsilon'] * normalized)
-
-        q_values = self.target_q_model([states, self.stock_actions])
-
-        return self.stock_actions, q_values
+        for var, target_var in zip(self.policy.trainable_variables, self.target_policy.trainable_variables):
+            target_var.assign(
+                self.config['rl_config']['tau'] * var + (1 - self.config['rl_config']['tau']) * target_var)
 
 
 class Agent(Process):
@@ -180,10 +126,12 @@ class Agent(Process):
 
         self.model = None
         self.env = None
-        self.epsilon = None
-
+        self.render_env = None
 
         self.logger.info(f'Agent {self.index} created.')
+
+        self.obs = None
+        self.done = False
 
     def run(self) -> None:
         self.logger.info(f'Initializing Agent {self.index}')
@@ -196,14 +144,22 @@ class Agent(Process):
             [tf.config.LogicalDeviceConfiguration(memory_limit=self.config['training_config']['agent_gpu_memory'])])
 
         self.logger.info(f'Initializing environment.')
-        self.env = TransportationNetworkEnvironment(self.config['env_config'])
-        self.logger.info(f'Initializing model.')
-        self.model = DoubleQModule(self.env, self.config, purpose='agent')
-        self.logger.info(f'Initializing exploration strategy.')
-        self.epsilon = getattr(util.rl.exploration, self.config['rl_config']['exploration']['type']) \
-            (**self.config['rl_config']['exploration']['config'])
+        self.env = gym.wrappers.TimeLimit(gym.make('LunarLander-v2', continuous=True), max_episode_steps=2 * self.config['env_config']['time_limit'])
+        self.obs = self.env.reset()[0]
+        self.done = False
 
-        self.noise = util.rl.exploration.NoiseDecay(**self.config['rl_config']['exploration_noise'])
+        self.render_env = gym.wrappers.record_video.RecordVideo(
+            env=gym.wrappers.TimeLimit(
+                gym.make('LunarLander-v2', continuous=True, render_mode='rgb_array'),
+                max_episode_steps=self.config['env_config']['time_limit']),
+            video_folder=f'{self.config["training_config"]["logdir"]}/videos/',
+            episode_trigger=lambda episode: True
+        )
+        self.logger.info(f'Initializing model.')
+        self.model = CAQLModel(self.env, self.config)
+        self.logger.info(f'Initializing exploration strategy.')
+        self.noise = getattr(util.rl.exploration, self.config['rl_config']['exploration']['type']) \
+            (**self.config['rl_config']['exploration']['config'], shape=self.env.action_space.sample().shape)
 
         self.logger.info(f'Agent {self.index} started.')
         while not self.finished:
@@ -230,75 +186,85 @@ class Agent(Process):
                     self.logger.debug(f'Agent {self.index} received test message.')
                     stat = self.test_trained_model()
                     self.pipe.send(dict(type='test', stat=stat))
+                elif message['type'] == 'render':
+                    self.logger.debug(f'Agent {self.index} received render message.')
+                    stat = self.render()
+                    self.pipe.send(dict(type='rendered', stat=stat))
             except Exception as e:
                 self.logger.exception(e)
                 self.pipe.send(dict(type='error', error=str(e)))
 
     def get_trajectories(self):
         start_time = datetime.now()
-        obs = self.env.reset()
-        done = False
         count = 0
         rewards = 0
         discounted_rewards = 0
         experiences = []
         # action = self.heuristics[0].predict(obs)
-        while not done:
-            if self.epsilon():
-                action = np.random.choice(self.config['rl_config']['heuristics']).predict(obs)
-            else:
-                action, _ = self.model.get_optimal_action_and_value(tf.expand_dims(obs, axis=0))
-                action = action[0].numpy()
 
-            action += np.random.normal(0, self.noise(), size=action.shape)
-            norm = np.linalg.norm(action, ord=self.config['env_config']['norm'])
-            action = self.config['env_config']['epsilon'] * np.divide(action, norm, where=norm != 0)
+        for i in range(self.config['env_config']['time_limit']):
+            if self.done:
+                self.done = False
+                self.obs = self.env.reset()[0]
 
-            next_obs, reward, done, _ = self.env.step(action)
-            next_action = self.config['rl_config']['heuristics'][0].predict(next_obs)
+            # if self.epsilon():
+            #     action = self.env.action_space.low + np.random.rand(self.env.action_space.shape[0]) * (
+            #             self.env.action_space.high - self.env.action_space.low)
+            # else:
+            action = self.model.target_policy(tf.expand_dims(self.obs, axis=0))[0].numpy()
+            action += self.noise()
 
-            # Only if it is not the last step due to time limit
-            if not done or (self.env.time_step < self.config['env_config']['horizon']):
-                experiences.append(dict(
-                    state=obs,
-                    action=action,
-                    reward=reward,
-                    next_state=next_obs,
-                    next_action=next_action,
-                    done=done
-                ))
-            obs = next_obs
-            action = next_action
+            next_obs, reward, self.done, truncated, info = self.env.step(action)
+
+            experiences.append(dict(
+                state=self.obs,
+                action=action,
+                reward=reward,
+                next_state=next_obs,
+                done=self.done
+            ))
+
+            self.obs = next_obs
             count += 1
             rewards += reward
             discounted_rewards += reward * self.config['rl_config']['gamma'] ** count
+
+            if truncated:
+                self.obs = self.env.reset()[0]
+                break
+
+        # print(f'Experience size: {sys.getsizeof(experiences)} | len: {len(experiences)}')
 
         return experiences, dict(
             cumulative_reward=rewards,
             average_reward=rewards / count,
             discounted_reward=discounted_rewards,
             episode_length=count,
-            epsilon=self.epsilon.get_current_epsilon(),
-            exploration_noise=self.noise.get_current_noise(),
-            time=datetime.now() - start_time
+            noise=self.noise.get_current_noise(),
+            time=datetime.now() - start_time,
+            # time_report=' ~ '.join([f'{timer}: {time / iterations:.3f}(s/i)' for timer, (time, iterations) in
+            #                           visualize.timer_stats.items()])
         )
 
     def test_trained_model(self):
         start_time = datetime.now()
-        obs = self.env.reset()
+        env = gym.wrappers.TimeLimit(gym.make('LunarLander-v2', continuous=True), max_episode_steps=self.config['env_config']['time_limit'])
+        obs = env.reset()[0]
         done = False
         count = 0
         rewards = 0
         discounted_rewards = 0
-        # action = self.heuristics[0].predict(obs)
         while not done:
-            actions, _ = self.model.get_optimal_action_and_value(np.expand_dims(obs, axis=0))
+            actions = self.model.target_policy(np.expand_dims(obs, axis=0))
             action = actions[0].numpy()
 
-            obs, reward, done, _ = self.env.step(action)
+            obs, reward, done, truncated, info = env.step(action)
             count += 1
             rewards += reward
             discounted_rewards += reward * self.config['rl_config']['gamma'] ** count
+
+            if truncated:
+                break
 
         return dict(
             cumulative_reward=rewards,
@@ -308,15 +274,27 @@ class Agent(Process):
             time=datetime.now() - start_time
         )
 
+    def render(self):
+        obs = self.render_env.reset()[0]
+        done = False
+        while not done:
+            actions = self.model.target_policy(np.expand_dims(obs, axis=0))
+            action = actions[0].numpy()
+
+            obs, reward, done, truncated, info = self.render_env.step(action)
+
+            if truncated:
+                break
+
     def update_model_weights(self, new_weights):
-        self.model.update_weights(new_weights)
+        self.model.target_policy.set_weights(new_weights)
 
 
 class Trainer(Process):
 
     def __init__(self, config, pipe) -> None:
         super().__init__(name='Trainer')
-        self.model = None
+        self.model: CAQLModel = None
         self.env = None
         self.logger = logging.getLogger('Trainer')
         self.config = config
@@ -332,22 +310,13 @@ class Trainer(Process):
         rewards = samples['rewards']
         next_states = samples['next_states']
         dones = samples['dones']
-        next_actions = samples['next_actions']
 
-        # q_values = self.model([next_states, next_actions])
-        _, q_values = self.model.get_optimal_action_and_value(next_states)
-
-        stats = self.model.train_step([states, actions, next_states, rewards, dones])
+        stats = self.model.train(states, actions, next_states, rewards, dones)
 
         self.training_step += 1
 
-        zero_q = self.model([next_states, np.zeros(next_actions.shape)])
-        greedy_q = self.model([next_states, next_actions])
-
         return {**dict(
             gamma=self.config['rl_config']['gamma'],
-            diff_to_greedy=np.mean(q_values - greedy_q),
-            diff_to_zero=np.mean(q_values - zero_q),
         ), **stats}
 
     def init(self):
@@ -363,20 +332,29 @@ class Trainer(Process):
 
         self.logger.info(f'Initializing trainer.')
         self.logger.info(f'Initializing trainer environment variables.')
-        self.env = TransportationNetworkEnvironment(self.config['env_config'])
+        self.env = gym.make('LunarLander-v2', continuous=True)
         self.logger.info(f'Initializing trainer model.')
-        self.model = DoubleQModule(self.env, self.config, 'target')
+        self.model = CAQLModel(self.env, self.config)
+        self.model.summary(print_fn=print)
         self.logger.info(f'Trainer initialized.')
 
     def store_model(self):
-        path = f'logs/{self.config["training_config"]["run_id"]}/weights-{self.training_step}.h5'
+        path = f'logs/{self.config["training_config"]["run_id"]}/weights/'
+        if not os.path.exists(path):
+            os.makedirs(path)
         self.logger.debug(f'Storing model to {path}')
-        self.model.target_q_model.save_weights(path)
+        self.model.q_model.save_weights(path + f'q_weights-{self.training_step}.h5')
+        self.model.target_q_model.save_weights(path + f'target_q_weights-{self.training_step}.h5')
+        self.model.policy.save_weights(path + f'policy_weights-{self.training_step}.h5')
+        self.model.target_policy.save_weights(path + f'target_policy_weights-{self.training_step}.h5')
 
-    def load_model(self, path):
-        self.logger.debug(f'Loading model from {path}')
-        self.model.target_q_model.load_weights(path)
-        self.model.__sync_weights()
+    def load_model(self, run_id, step):
+        self.logger.debug(f'Loading model from {run_id}')
+        self.model.q_model.load_weights('logs/' + run_id + f'/weights/q_weights-{step}.h5')
+        self.model.target_q_model.load_weights('logs/' + run_id + f'/weights/target_q_weights-{step}.h5')
+        self.model.policy.load_weights('logs/' + run_id + f'/weights/policy_weights-{step}.h5')
+        self.model.target_policy.load_weights('logs/' + run_id + f'/weights/target_policy_weights-{step}.h5')
+        return self.model.target_policy.get_weights()
 
     def run(self) -> None:
         self.init()
@@ -392,7 +370,7 @@ class Trainer(Process):
                         dict(
                             type='model_updated',
                             stats={k: v.numpy() if isinstance(v, tf.Tensor) else v for k, v in stats.items()},
-                            weights=self.model.get_weights()
+                            weights=self.model.target_policy.get_weights()
                         )
                     )
                 elif msg['type'] == 'add_samples':
@@ -401,6 +379,9 @@ class Trainer(Process):
                     self.pipe.send(dict(type='samples_added', total_experience=self.replay_buffer.size()))
                 elif msg['type'] == 'store_model':
                     self.store_model()
+                elif msg['type'] == 'load_model':
+                    policy_weights = self.load_model(msg['run_id'], msg['step'])
+                    self.pipe.send(dict(type='loaded', policy_weights=policy_weights))
                 else:
                     self.logger.error(f'Invalid Message {msg}')
             except Exception as e:
@@ -513,6 +494,26 @@ class Manager:
         self.trainer.start()
         self.tf_logger.start()
 
+        if 'resume_from' in self.config['training_config']:
+            self.trainer_pipe.send(
+                dict(
+                    type='load_model',
+                    run_id=self.config['training_config']['resume_from']['run_id'],
+                    step=self.config['training_config']['resume_from']['step']
+                )
+            )
+            ack = self.trainer_pipe.recv()
+            assert ack['type'] == 'loaded', f'Model could not be loaded {ack}'
+            policy_weights = ack['policy_weights']
+            for agent in self.agents:
+                agent['pipe'].send(dict(
+                    type='update_weights',
+                    weights=policy_weights
+                ))
+
+            for agent in self.agents:
+                assert agent['pipe'].recv()['type'] == 'weights_updated'
+
         total_samples = 0
         for iteration in (pbar := tqdm(range(self.config['rl_config']['num_episodes']))):
             with Timer('GetTrajectories'):
@@ -537,9 +538,7 @@ class Manager:
 
                 self.log_scalar('rl/total_samples', total_samples, self.training_step)
                 self.log_scalar('rl/experience_replay_buffer_size', experience_replay_buffer_size, self.training_step)
-                self.log_scalar('rl/epsilon', np.average([info['epsilon'] for info in infos]),
-                                self.training_step)
-                self.log_scalar('rl/exploration_noise', np.average([info['exploration_noise'] for info in infos]),
+                self.log_scalar('rl/noise', np.average([info['noise'] for info in infos]),
                                 self.training_step)
                 self.log_scalar('env/reward', np.average([info['cumulative_reward'] for info in infos]),
                                 self.training_step)
@@ -553,7 +552,8 @@ class Manager:
                                    self.training_step)
                 self.log_histogram('env/time', [info['time'].total_seconds() for info in infos],
                                    self.training_step)
-                self.log_scalar('training/epoch_time', np.average([info['time'].total_seconds() for info in infos]), self.training_step)
+                self.log_scalar('training/epoch_time', np.average([info['time'].total_seconds() for info in infos]),
+                                self.training_step)
 
             with Timer('UpdateModel'):
                 for i in range(self.config['training_config']['num_training_per_epoch']):
@@ -571,19 +571,27 @@ class Manager:
                         raise Exception(ack['error'])
                     assert ack['type'] == 'model_updated'
                     stats = ack['stats']
+                    q_stats = stats['q']
+                    policy_stats = stats['policy']
+                    average_action_0 = stats['average_actions'][0]
+                    average_action_1 = stats['average_actions'][1]
+
                     new_weights = ack['weights']
                     duration = (datetime.now() - start).total_seconds()
 
-                    self.log_scalar('rl/q_loss', stats['loss'], self.training_step)
-                    self.log_scalar('rl/lr', stats['lr'], self.training_step)
+                    self.log_scalar('env/average_action_0', average_action_0, self.training_step)
+                    self.log_scalar('env/average_action_1', average_action_1, self.training_step)
+
+                    self.log_scalar('rl/q_loss', q_stats['loss'], self.training_step)
                     self.log_scalar('rl/gamma', stats['gamma'], self.training_step)
-                    self.log_scalar('rl/r2', stats['r2'], self.training_step)
-                    self.log_scalar('rl/tau', self.config['rl_config']['tau'], self.training_step)
+                    self.log_scalar('rl/r2', q_stats['r2'], self.training_step)
+                    self.log_scalar('rl/max_q', q_stats['max_q'], self.training_step)
+                    self.log_scalar('rl/min_q', q_stats['min_q'], self.training_step)
+                    self.log_scalar('rl/mean_q', q_stats['mean_q'], self.training_step)
+                    self.log_scalar('constants/tau', self.config['rl_config']['tau'], self.training_step)
                     self.log_scalar('training/train_time', duration, self.training_step)
-                    self.log_scalar('max_q/diff_to_zero', stats['diff_to_zero'], self.training_step)
-                    self.log_scalar('max_q/diff_to_greedy', stats['diff_to_greedy'], self.training_step)
-                    self.log_scalar('max_q/lr', self.config['rl_config']['max_q']['action_optimizer_lr'], self.training_step)
-                    self.log_scalar('max_q/step_count', self.config['rl_config']['max_q']['action_gradient_step_count'], self.training_step)
+                    # self.log_scalar('rl/policy_loss', policy_stats['loss'], self.training_step)
+                    # self.log_scalar('rl/policy_r2', policy_stats['r2'], self.training_step)
 
                     self.training_step += 1
 
@@ -598,7 +606,8 @@ class Manager:
                 for agent in self.agents:
                     assert agent['pipe'].recv()['type'] == 'weights_updated'
 
-                if ((self.training_step - 1) // self.config['training_config']['num_training_per_epoch']) % self.config['training_config']['checkpoint_interval'] == 0:
+                if ((self.training_step - 1) // self.config['training_config']['num_training_per_epoch']) % \
+                        self.config['training_config']['checkpoint_interval'] == 0:
                     self.logger.debug(f'Checkpointing')
 
                     for agent in self.agents:
@@ -608,12 +617,19 @@ class Manager:
 
                     stats = []
                     for i, agent in enumerate(self.agents):
-                        pbar.set_description(f'Testing {i}/{len(self.agents)}.')
+                        pbar.set_description(f'Testing {self.training_step} {i}/{len(self.agents)}.')
                         msg = agent['pipe'].recv()
                         assert msg['type'] == 'test'
                         stats.append(msg['stat'])
 
-                    self.log_scalar('env/test_reward', np.average([stat['cumulative_reward'] for stat in stats]), self.training_step)
+                    self.log_scalar('env/test_reward', np.average([stat['cumulative_reward'] for stat in stats]),
+                                    self.training_step)
+
+                    self.agents[0]['pipe'].send(dict(
+                        type='render'
+                    ))
+                    ack = self.agents[0]['pipe'].recv()
+                    assert ack['type'] == 'rendered', f'Failed to render. {ack}'
 
                     self.trainer_pipe.send(dict(
                         type='store_model'
@@ -628,89 +644,64 @@ if __name__ == '__main__':
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     config = dict(
         env_config=dict(
-            city='SiouxFalls',
-            horizon=50,
-            epsilon=30,
-            norm=2,
-            frac=0.5,
-            num_sample=20,
-            render_mode=None,
-            reward_multiplier=1.0,
-            congestion=True,
-            trips=dict(
-                type='demand_file',
-                trips=Trip.trips_using_demand_file('Sirui/traffic_data/sf_demand.txt'),
-                strategy='random',
-                count=100
-            ),
-            rewarding_rule='vehicle_count',
+            time_limit=1024
         ),
         model_config=dict(
-            optimizer=dict(
+            q_optimizer=dict(
                 class_name='Adam',
                 config=dict(
-                    learning_rate=1e-5
-                    # learning_rate=dict(
-                    #     class_name='ExponentialDecay',
-                    #     config=dict(
-                    #         initial_learning_rate=1e-2,
-                    #         decay_steps=400,
-                    #         decay_rate=0.10
-                    #     )
-                    # )
+                    learning_rate=1e-3
+                )
+            ),
+            policy_optimizer=dict(
+                class_name='Adam',
+                config=dict(
+                    learning_rate=1e-3
                 )
             ),
             loss='MeanSquaredError',
-            conv_layers=[
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-            ],
             dense_layers=[
-                dict(size=128, activation='elu'),
-                dict(size=128, activation='elu'),
+                dict(size=256, activation='relu'),
+                dict(size=256, activation='relu'),
             ]
         ),
         rl_config=dict(
+            # exploration=dict(
+            #     type='NoiseDecay',
+            #     config=dict(
+            #         noise_start=0.5,
+            #         noise_end=0.1,
+            #         noise_decay=40_000
+            #     )
             exploration=dict(
-                type='ConstantEpsilon',
+                type='OUActionNoise',
                 config=dict(
-                    epsilon=0.3
-                ),
-                # type='DecayEpsilon',
-                # config=dict(
-                #     epsilon_start=0.4,
-                #     epsilon_end=0.1,
-                #     epsilon_decay=2000
-                # )
+                    theta=0.15,
+                    mean=0,
+                    std_deviation=0.2,
+                    dt=0.01,
+                    target_scale=0.01,
+                    anneal=200_000
+                )
             ),
-            exploration_noise=dict(
-                noise_start=3.0,
-                noise_end=1.0,
-                noise_decay=20_000
-            ),
-            heuristics=list(),
-            max_q=dict(
-                action_gradient_step_count=100,
-                action_optimizer_lr=0.5,
-            ),
-            tau=0.1,
-            gamma=0.97,
-            batch_size=512,
-            buffer_size=1_000_000,
-            num_episodes=10_000
+            tau=0.002,
+            gamma=0.99,
+            batch_size=256,
+            buffer_size=500_000,
+            num_episodes=10000
         ),
         training_config=dict(
-            num_agents=31,
-            num_training_per_epoch=3,
+            num_agents=8,
+            num_training_per_epoch=32,
             run_id=run_id,
             agent_gpu_memory=512,
             trainer_gpu_memory=512,
             logdir=f'logs/{run_id}',
-            checkpoint_interval=5
+            checkpoint_interval=20,
+            # resume_from=dict(
+            #     run_id='20230214-154600',
+            #     step=2248
+            # )
         ),
     )
 
@@ -722,13 +713,6 @@ if __name__ == '__main__':
 
     logger = logging.getLogger(__name__)
     logger.info(f'Starting run {run_id}...')
-
-    config['rl_config']['heuristics'] = [
-        GreedyRiderVector(config['env_config']['epsilon'], config['env_config']['norm']),
-        # Random((76,), config['env_config']['norm'], config['env_config']['epsilon'], config['env_config']['frac'],
-        #        'discrete'),
-        #Zero((76,)),
-    ]
 
     manager = Manager(config)
     try:

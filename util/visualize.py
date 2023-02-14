@@ -33,3 +33,7 @@ class Timer(object):
     @staticmethod
     def report(name):
         logging.getLogger(f'Timer Report - {name}').info(f'Total time: {timer_stats[name][0]:.3f}(s) - Average time: {timer_stats[name][0] / timer_stats[name][1]:.3f}(s) - Iterations: {timer_stats[name][1]}')
+
+    @staticmethod
+    def format(name):
+        return f'Total time: {timer_stats[name][0]:.3f}(s) - Average time: {timer_stats[name][0] / timer_stats[name][1]:.3f}(s) - Iterations: {timer_stats[name][1]}'

@@ -15,6 +15,7 @@ from transport_env.NetworkEnv import TransportationNetworkEnvironment
 from transport_env.model import Trip
 from util import visualize
 from util.tf.gcn import GraphConvolutionLayer
+from util.tf.normalizers import LNormOptimizerLayer
 from util.visualize import Timer
 
 
@@ -53,7 +54,7 @@ def get_vf(env, config):
     model = tf.keras.Model(inputs=input, outputs=output)
 
     model.compile(
-        optimizer=tf.keras.optimizers.get(config['model_config']['optimizer_vf']),
+        optimizer=tf.keras.optimizers.get(config['model_config']['vf_optimizer']),
     )
 
     return model
@@ -79,11 +80,15 @@ def get_policy(env, config):
     for l in config['model_config']['dense_layers']:
         shared = tf.keras.layers.Dense(8, activation=l['activation'])(shared)
 
-    output = tf.keras.layers.Dense(action_shape[0] * 2)(shared)
-    model = tf.keras.Model(inputs=input, outputs=output)
+    mean_out = tf.keras.layers.Dense(action_shape[0], activation='softmax')(shared)
+    normalized_out = LNormOptimizerLayer(ord=config['env_config']['norm'], length=config['env_config']['epsilon'])(mean_out)
+    std_out = tf.keras.layers.Dense(action_shape[0], activation='softmax')(shared)
+
+    # output = tf.keras.layers.Dense(action_shape[0] * 2)(shared)
+    model = tf.keras.Model(inputs=input, outputs=[normalized_out, std_out])
 
     model.compile(
-        optimizer=tf.keras.optimizers.get(config['model_config']['optimizer_policy'])
+        optimizer=tf.keras.optimizers.get(config['model_config']['policy_optimizer'])
     )
 
     return model
@@ -158,27 +163,28 @@ class Agent(Process):
         discounted_rewards = 0
         experiences = []
         while not done:
-            if random.random() < 0.2:
+            if random.random() < 0.0:
                 action = random.sample(self.heuristics, 1)[0].predict(obs)
             else:
-                action_logits = self.policy(tf.expand_dims(obs, axis=0))
-                assert not np.isnan(action_logits).any(), f'Action_Logits has nan: {action_logits}'
+                means, stds = self.policy(tf.expand_dims(obs, axis=0))
+                # assert not np.isnan(action_logits).any(), f'Action_Logits has nan: {action_logits}'
 
-                means, stds = tf.split(action_logits, 2, axis=1)
+                # means, stds = tf.split(action_logits, 2, axis=1)
                 distribution = tfp.distributions.MultivariateNormalDiag(loc=means, scale_diag=stds)
-                action = distribution.sample()
+                action = distribution.sample()[0].numpy()
 
+            assert not np.isnan(action).any(), f'sampled action has nan: {action}'
             obs, reward, done, _ = self.env.step(action)
 
             # Only if it is not the last step due to time limit
-            if not done or (self.env.time_step < self.config['env_config']['horizon']):
-                experiences.append(dict(
-                    state=obs,
-                    action=action,
-                    reward=reward,
-                    next_state=obs,
-                    done=done
-                ))
+            # if not done or (self.env.time_step < self.config['env_config']['horizon']):
+            experiences.append(dict(
+                state=obs,
+                action=action,
+                reward=reward,
+                next_state=obs,
+                done=done
+            ))
             count += 1
             rewards += reward
             discounted_rewards += reward * self.config['rl_config']['gamma'] ** count
@@ -199,12 +205,12 @@ class Agent(Process):
         rewards = 0
         discounted_rewards = 0
         while not done:
-            action_logits = self.policy(tf.expand_dims(obs, axis=0))
-            assert not np.isnan(action_logits).any(), f'Action_Logits has nan: {action_logits}'
+            means, stds = self.policy(tf.expand_dims(obs, axis=0))
+            # assert not np.isnan(action_logits).any(), f'Action_Logits has nan: {action_logits}'
 
-            means, stds = tf.split(action_logits, 2, axis=1)
+            # means, stds = tf.split(action_logits, 2, axis=1)
             distribution = tfp.distributions.MultivariateNormalDiag(loc=means, scale_diag=tf.zeros(stds.shape))
-            action = distribution.sample()
+            action = distribution.sample()[0].numpy()
 
             obs, reward, done, _ = self.env.step(action)
             count += 1
@@ -248,8 +254,8 @@ class Trainer(Process):
 
     def update_model(self, states, actions, rewards, next_states, dones):
 
-        old_action_logits = self.policy(states, training=False)
-        old_means, old_stds = tf.split(old_action_logits, 2, axis=1)
+        old_means, old_stds = self.policy(states, training=False)
+        # old_means, old_stds = tf.split(old_action_logits, 2, axis=1)
         old_distributions = tfp.distributions.MultivariateNormalDiag(loc=old_means, scale_diag=old_stds)
         old_log_probs = old_distributions.log_prob(actions)
 
@@ -257,8 +263,8 @@ class Trainer(Process):
 
         with tf.GradientTape(persistent=True) as tape:
             state_val = self.value_function(states, training=True)
-            action_logits = self.policy(states, training=True)
-            means, stds = tf.split(action_logits, 2, axis=1)
+            means, stds = self.policy(states, training=True)
+            # means, stds = tf.split(action_logits, 2, axis=1)
             distribution = tfp.distributions.MultivariateNormalDiag(loc=means, scale_diag=stds)
             log_probs = distribution.log_prob(actions)
 
@@ -604,8 +610,8 @@ if __name__ == '__main__':
             city='SiouxFalls',
             horizon=50,
             epsilon=30,
-            norm=2,
-            frac=0.1,
+            norm=5,
+            frac=0.3,
             num_sample=20,
             render_mode=None,
             reward_multiplier=1.0,
@@ -619,10 +625,10 @@ if __name__ == '__main__':
             rewarding_rule='vehicle_count',
         ),
         model_config=dict(
-            optimizer_vf=dict(
+            vf_optimizer=dict(
                 class_name='Adam',
                 config=dict(
-                    learning_rate=5e-4
+                    learning_rate=5e-5
                     # learning_rate=dict(
                     #     class_name='ExponentialDecay',
                     #     config=dict(
@@ -633,10 +639,10 @@ if __name__ == '__main__':
                     # )
                 )
             ),
-            optimizer_policy=dict(
+            policy_optimizer=dict(
                 class_name='Adam',
                 config=dict(
-                    learning_rate=1e-5
+                    learning_rate=1e-3
                     # learning_rate=dict(
                     #     class_name='ExponentialDecay',
                     #     config=dict(
@@ -666,9 +672,9 @@ if __name__ == '__main__':
             lam=0.95,  # GAE lambda
             epsilon=0.2,  # PPO clip
             c1=1.0,  # VF loss coefficient
-            c2=0.0,  # Entropy coefficient
-            initial_beta=0.01,  # Initial kl penalty
-            target_beta=0.01,  # Target kl penalty
+            c2=1.0,  # Entropy coefficient
+            initial_beta=1.0,  # Initial kl penalty
+            target_beta=1.0,  # Target kl penalty
             num_episodes=1000
         ),
         training_config=dict(
@@ -692,9 +698,9 @@ if __name__ == '__main__':
 
     config['rl_config']['heuristics'] = [
         GreedyRiderVector(config['env_config']['epsilon'], config['env_config']['norm']),
-        # Random((76,), config['env_config']['norm'], config['env_config']['epsilon'], config['env_config']['frac'],
-        #        'discrete'),
-        Zero((76,)),
+        Random((76,), config['env_config']['norm'], config['env_config']['epsilon'], config['env_config']['frac'],
+               'discrete'),
+        # Zero((76,)),
     ]
 
     manager = Manager(config)
