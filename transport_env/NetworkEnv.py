@@ -1,13 +1,12 @@
 import logging
 import math
-import random
-from typing import Optional, Union, Tuple, Callable, List, Dict
+from typing import Optional, Union, Tuple, List, Dict
 
-import gym
+import gymnasium as gym
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-from gym.core import ObsType, RenderFrame
+from gymnasium.core import ObsType, RenderFrame
 
 import util.tntp
 from transport_env.model import Trip
@@ -84,7 +83,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
         return self.__get_current_observation_edge_vector()
 
     def step(self, action) -> Union[
-        Tuple[ObsType, float, bool, bool, dict], Tuple[ObsType, float, bool, dict]
+        Tuple[ObsType, float, bool, bool, dict], Tuple[ObsType, float, bool, bool, dict]
     ]:
         if not self.initialized:
             raise Exception('Call env.reset() to initialize the network and trips before env.step().')
@@ -159,7 +158,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
                                    f' Will arrive there in {trip.time_to_next} steps.')
                 trip.time_to_next -= 1
 
-        if remaining_trips == 0 or self.time_step >= self.config['horizon']:
+        if remaining_trips == 0:
             self.finished = True
 
         done = self.finished
@@ -177,7 +176,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
 
         self.finished_previous_step = currently_finished
 
-        return obs, reward, done, info
+        return obs, reward, done, False, info  # False is truncated.
 
     def __get_reward(self):
         return (sum(self.__get_on_vertex_vehicles().values()) + sum(self.__get_on_edge_vehicles().values())) * self.config['reward_multiplier']
