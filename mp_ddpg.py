@@ -256,7 +256,7 @@ class Agent(Process):
 
         stats = dict(
             cumulative_reward=np.mean(self.rewards),
-            average_reward=np.sum(self.episode_rewards) / np.sum(self.episode_rewards),
+            average_reward=np.sum(self.episode_rewards) / np.sum(self.episode_lengths),
             discounted_reward=np.mean(self.discounted_rewards),
             episode_length=np.mean(self.episode_lengths),
             noise=self.noise.get_current_noise(),
