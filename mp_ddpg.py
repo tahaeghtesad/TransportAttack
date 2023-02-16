@@ -676,8 +676,8 @@ if __name__ == '__main__':
                 dict(size=64, activation='elu'),
             ],
             dense_layers=[
-                dict(size=256, activation='relu'),
-                dict(size=256, activation='relu'),
+                dict(size=128, activation='relu'),
+                dict(size=128, activation='relu'),
             ]
         ),
         rl_config=dict(
