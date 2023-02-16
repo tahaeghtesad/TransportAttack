@@ -1,7 +1,7 @@
 import logging
 from typing import List
 
-import gym
+import gymnasium as gym
 import networkx as nx
 
 import numpy as np

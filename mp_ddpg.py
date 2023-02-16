@@ -175,7 +175,7 @@ class Agent(Process):
         self.logger.info(f'Initializing model.')
         self.model = DDPGModel(self.env, self.config)
 
-        self.env = gym.wrappers.TimeLimit(self.env, max_episode_steps=10 * self.config['env_config']['horizon'])
+        self.env = gym.wrappers.TimeLimit(self.env, max_episode_steps=self.config['env_config']['horizon'])
         self.obs = self.env.reset()
         self.done = False
         self.logger.info(f'Initializing exploration strategy.')
@@ -250,8 +250,7 @@ class Agent(Process):
             self.discounted_reward += reward * self.config['rl_config']['gamma'] ** self.count
 
             if truncated:
-                self.obs = self.env.reset()
-                break
+                self.done = True
 
         # print(f'Experience size: {sys.getsizeof(experiences)} | len: {len(experiences)}')
 
@@ -665,7 +664,7 @@ if __name__ == '__main__':
                 type='demand_file',
                 trips=Trip.trips_using_demand_file('Sirui/traffic_data/sf_demand.txt'),
                 strategy='random',
-                count=100
+                count=10
             ),
             rewarding_rule='vehicle_count',
         ),
@@ -712,7 +711,7 @@ if __name__ == '__main__':
                     std_deviation=1.0,
                     dt=0.01,
                     target_scale=0.01,
-                    anneal=100_000
+                    anneal=50_000
                 )
             ),
             tau=0.002,

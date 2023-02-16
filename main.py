@@ -3,6 +3,7 @@ import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
+import gymnasium as gym
 
 import attack_heuristics
 from attack_heuristics import PostProcessHeuristic
@@ -31,7 +32,7 @@ if __name__ == '__main__':
             type='demand_file',
             trips=Trip.trips_using_demand_file('Sirui/traffic_data/sf_demand.txt'),
             strategy='random',
-            count=100
+            count=10
         ),
         rewarding_rule='vehicle_count',
         repeat=10
@@ -78,7 +79,7 @@ if __name__ == '__main__':
     cumulative_reward_data = np.zeros((config['repeat'], len(strategies)))
     discounted_reward_data = np.zeros((config['repeat'], len(strategies)))
 
-    env = TransportationNetworkEnvironment(config)
+    env = gym.wrappers.TimeLimit(TransportationNetworkEnvironment(config), config['horizon'])
 
     gamma = 0.95
 
@@ -100,12 +101,15 @@ if __name__ == '__main__':
 
             while not d:
                 a = strategy.predict(o)
-                o, r, d, i = env.step(a)
+                o, r, d, t, i = env.step(a)
                 cumulative_reward += r
                 discounted_reward += gamma ** env.time_step * r
                 logger.debug(f'Reward: {r:.2f} - Done {d}')
                 logger.debug(f'Observation:\n{o}')
                 step_count += 1
+
+                if t:
+                    break
 
             discounted_rewards.append(discounted_reward)
             cumulative_rewards.append(cumulative_reward)
