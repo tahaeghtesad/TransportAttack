@@ -710,7 +710,7 @@ if __name__ == '__main__':
                     mean=0,
                     std_deviation=1.0,
                     dt=0.01,
-                    target_scale=0.01,
+                    target_scale=0.1,
                     anneal=50_000
                 )
             ),
