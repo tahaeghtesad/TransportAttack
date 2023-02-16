@@ -67,7 +67,7 @@ def get_policy_model(env, config, name):
     for l in config['model_config']['dense_layers']:
         flattened = tf.keras.layers.Dense(l['size'], activation=l['activation'])(flattened)
 
-    flattened = tf.keras.layers.Dense(action_shape[0])(flattened)
+    flattened = tf.keras.layers.Dense(action_shape[0], activation='relu')(flattened)
     output = LNormOptimizerLayer(ord=config['env_config']['norm'], length=config['env_config']['epsilon'])(flattened)
 
     model = tf.keras.Model(inputs=state_in, outputs=output, name=name)
@@ -676,8 +676,8 @@ if __name__ == '__main__':
                 dict(size=64, activation='elu'),
             ],
             dense_layers=[
-                dict(size=128, activation='relu'),
-                dict(size=128, activation='relu'),
+                dict(size=128, activation='elu'),
+                dict(size=128, activation='elu'),
             ]
         ),
         rl_config=dict(
