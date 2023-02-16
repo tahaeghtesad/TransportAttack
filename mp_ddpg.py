@@ -719,7 +719,7 @@ if __name__ == '__main__':
             batch_size=64,
             buffer_size=1_000_000,
             num_episodes=10000,
-            reward_scale=0.01
+            reward_scale=1.0
         ),
         training_config=dict(
             num_agents=32,
