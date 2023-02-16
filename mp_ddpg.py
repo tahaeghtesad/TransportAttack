@@ -320,7 +320,7 @@ class Trainer(Process):
     def update_model(self, samples):
         states = samples['states']
         actions = samples['actions']
-        rewards = samples['rewards']
+        rewards = samples['rewards'] * self.config['rl_config']['reward_scale']
         next_states = samples['next_states']
         dones = samples['dones']
 
@@ -718,7 +718,8 @@ if __name__ == '__main__':
             gamma=0.97,
             batch_size=64,
             buffer_size=1_000_000,
-            num_episodes=10000
+            num_episodes=10000,
+            reward_scale=0.01
         ),
         training_config=dict(
             num_agents=32,
