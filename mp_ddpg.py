@@ -152,6 +152,13 @@ class Agent(Process):
         self.obs = None
         self.done = False
 
+        self.episode_lengths = []
+        self.episode_rewards = []
+        self.discounted_rewards = []
+        self.rewards = 0
+        self.count = 0
+        self.discounted_reward = 0
+
     def run(self) -> None:
         self.logger.info(f'Initializing Agent {self.index}')
 
@@ -206,14 +213,17 @@ class Agent(Process):
 
     def get_trajectories(self):
         start_time = datetime.now()
-        count = 0
-        rewards = 0
-        discounted_rewards = 0
         experiences = []
         # action = self.heuristics[0].predict(obs)
 
         for i in range(self.config['training_config']['agent_batch_size']):
             if self.done:
+                self.episode_lengths.append(self.count)
+                self.episode_rewards.append(self.rewards)
+                self.discounted_rewards.append(self.discounted_reward)
+                self.count = 0
+                self.rewards = 0
+                self.discounted_reward = 0
                 self.done = False
                 self.obs = self.env.reset()
 
@@ -235,9 +245,9 @@ class Agent(Process):
             ))
 
             self.obs = next_obs
-            count += 1
-            rewards += reward
-            discounted_rewards += reward * self.config['rl_config']['gamma'] ** count
+            self.count += 1
+            self.rewards += reward
+            self.discounted_reward += reward * self.config['rl_config']['gamma'] ** self.count
 
             if truncated:
                 self.obs = self.env.reset()
@@ -245,16 +255,22 @@ class Agent(Process):
 
         # print(f'Experience size: {sys.getsizeof(experiences)} | len: {len(experiences)}')
 
-        return experiences, dict(
-            cumulative_reward=rewards,
-            average_reward=rewards / count,
-            discounted_reward=discounted_rewards,
-            episode_length=count,
+        stats = dict(
+            cumulative_reward=np.mean(self.rewards),
+            average_reward=np.sum(self.episode_rewards) / np.sum(self.episode_rewards),
+            discounted_reward=np.mean(self.discounted_rewards),
+            episode_length=np.mean(self.episode_lengths),
             noise=self.noise.get_current_noise(),
             time=datetime.now() - start_time,
             # time_report=' ~ '.join([f'{timer}: {time / iterations:.3f}(s/i)' for timer, (time, iterations) in
             #                           visualize.timer_stats.items()])
         )
+
+        self.episode_rewards = []
+        self.discounted_rewards = []
+        self.episode_lengths = []
+
+        return experiences, stats
 
     def test_trained_model(self):
         start_time = datetime.now()
@@ -696,11 +712,11 @@ if __name__ == '__main__':
                     std_deviation=1.0,
                     dt=0.01,
                     target_scale=0.01,
-                    anneal=500_000
+                    anneal=100_000
                 )
             ),
             tau=0.002,
-            gamma=0.99,
+            gamma=0.97,
             batch_size=64,
             buffer_size=1_000_000,
             num_episodes=10000
