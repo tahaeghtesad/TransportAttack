@@ -273,7 +273,7 @@ class Agent(Process):
 
     def test_trained_model(self):
         start_time = datetime.now()
-        env = gym.wrappers.TimeLimit(TransportationNetworkEnvironment(self.config['env_config']), max_episode_steps=10 * self.config['env_config']['horizon'])
+        env = gym.wrappers.TimeLimit(TransportationNetworkEnvironment(self.config['env_config']), max_episode_steps=self.config['env_config']['horizon'])
         obs = env.reset()
         done = False
         count = 0
@@ -710,20 +710,20 @@ if __name__ == '__main__':
                     mean=0,
                     std_deviation=1.0,
                     dt=0.01,
-                    target_scale=0.1,
-                    anneal=50_000
+                    target_scale=0.02,
+                    anneal=1_000_000
                 )
             ),
             tau=0.002,
             gamma=0.97,
-            batch_size=64,
+            batch_size=128,
             buffer_size=1_000_000,
             num_episodes=10000,
             reward_scale=1.0
         ),
         training_config=dict(
-            num_agents=32,
-            num_training_per_epoch=16,
+            num_agents=16,
+            num_training_per_epoch=32,
             run_id=run_id,
             agent_gpu_memory=512,
             trainer_gpu_memory=512,
