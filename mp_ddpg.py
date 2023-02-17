@@ -730,10 +730,10 @@ if __name__ == '__main__':
             logdir=f'logs/{run_id}',
             checkpoint_interval=20,
             agent_batch_size=1024,
-            # resume_from=dict(
-            #     run_id='20230214-154600',
-            #     step=2248
-            # )
+            resume_from=dict(
+                run_id='20230217-032444',
+                step=25616
+            )
         ),
     )
 
