@@ -95,4 +95,4 @@ class OUActionNoise:
             self.x_prev = np.zeros(self.shape)
 
     def get_current_noise(self):
-        return self.scale
+        return self.scale * self.std_dev
