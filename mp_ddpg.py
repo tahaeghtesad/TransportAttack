@@ -696,44 +696,43 @@ if __name__ == '__main__':
             ]
         ),
         rl_config=dict(
-            # exploration=dict(
-            #     type='NoiseDecay',
-            #     config=dict(
-            #         noise_start=0.5,
-            #         noise_end=0.1,
-            #         noise_decay=40_000
-            #     )
             exploration=dict(
-                type='OUActionNoise',
+                # type='OUActionNoise',
+                # config=dict(
+                #     theta=0.15,
+                #     mean=0,
+                #     std_deviation=1.0,
+                #     dt=0.01,
+                #     target_scale=0.02,
+                #     anneal=3_000_000
+                # )
+                type='NoiseDecay',
                 config=dict(
-                    theta=0.15,
-                    mean=0,
-                    std_deviation=1.0,
-                    dt=0.01,
-                    target_scale=0.02,
-                    anneal=1_000_000
+                    noise_start=5.0,
+                    noise_end=0.01,
+                    noise_decay=2_000_000
                 )
             ),
             tau=0.002,
             gamma=0.97,
-            batch_size=128,
+            batch_size=256,
             buffer_size=1_000_000,
             num_episodes=10000,
             reward_scale=1.0
         ),
         training_config=dict(
-            num_agents=16,
-            num_training_per_epoch=32,
+            num_agents=32,
+            num_training_per_epoch=8,
             run_id=run_id,
             agent_gpu_memory=512,
             trainer_gpu_memory=512,
             logdir=f'logs/{run_id}',
             checkpoint_interval=20,
-            agent_batch_size=1024,
-            resume_from=dict(
-                run_id='20230217-032444',
-                step=25616
-            )
+            agent_batch_size=256,
+            # resume_from=dict(
+            #     run_id='20230217-032444',
+            #     step=25616
+            # )
         ),
     )
 
