@@ -716,7 +716,7 @@ if __name__ == '__main__':
             tau=0.002,
             gamma=0.97,
             batch_size=256,
-            buffer_size=1_000_000,
+            buffer_size=5_000_000,
             num_episodes=10000,
             reward_scale=1.0
         ),
