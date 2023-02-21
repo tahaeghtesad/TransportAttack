@@ -708,9 +708,9 @@ if __name__ == '__main__':
                 # )
                 type='NoiseDecay',
                 config=dict(
-                    noise_start=5.0,
+                    noise_start=10.0,
                     noise_end=0.01,
-                    noise_decay=2_000_000
+                    noise_decay=3_000_000
                 )
             ),
             tau=0.002,
@@ -722,7 +722,7 @@ if __name__ == '__main__':
         ),
         training_config=dict(
             num_agents=32,
-            num_training_per_epoch=8,
+            num_training_per_epoch=16,
             run_id=run_id,
             agent_gpu_memory=512,
             trainer_gpu_memory=512,
