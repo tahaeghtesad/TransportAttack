@@ -16,7 +16,10 @@ class GraphConvolutionLayer(tf.keras.layers.Layer):
 
     def call(self, inputs, *args, **kwargs):
 
-        output = tf.linalg.diag(tf.math.reciprocal(tf.reduce_sum(self.adj, axis=1) + self.beta)) @ (self.adj + tf.linalg.diag(self.beta)) @ inputs @ self.kernel + self.bias
+        output = tf.linalg.diag(tf.math.reciprocal(tf.reduce_sum(self.adj, axis=1) + self.beta)) @\
+                 (self.adj + tf.linalg.diag(self.beta)) @\
+                 inputs @\
+                 self.kernel + self.bias
 
         if self.activation is not None:
             output = self.activation(output)

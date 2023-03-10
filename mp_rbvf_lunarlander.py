@@ -2,7 +2,6 @@ import logging
 import sys
 import os
 import traceback
-import argparse
 from datetime import datetime
 from multiprocessing import Process, Pipe
 
@@ -12,124 +11,133 @@ import tensorflow as tf
 from tqdm import tqdm
 
 import util.rl.exploration
-from transport_env.NetworkEnv import TransportationNetworkEnvironment
-from transport_env.model import Trip
 from util import visualize
 from util.rl.experience_replay import ExperienceReplay
-from util.tf.gcn import GraphConvolutionLayer
-from util.tf.normalizers import LNormOptimizerLayer
 from util.visualize import Timer
-from util.tf.math import r2
+from util.tf.math import r2, cdist
 
 
 def get_q_model(env, config, name):
     action_shape = env.action_space.sample().shape  # (76, )
-    state_shape = env.observation_space.sample().shape  # (76, 5)
-    adj = env.get_adjacency_matrix()
-
-    state_in = tf.keras.layers.Input(shape=state_shape)
-    action_in = tf.keras.layers.Input(shape=action_shape)
-    action_reshaped = tf.keras.layers.Reshape((action_shape[0], 1))(action_in)
-
-    shared = tf.keras.layers.Concatenate(axis=2)([state_in, action_reshaped])
-
-    for l in config['model_config']['conv_layers']:
-        shared = GraphConvolutionLayer(l['size'], adj, activation=l['activation'])(shared)
-
-    shared = tf.keras.layers.Flatten()(shared)
-
-    for l in config['model_config']['dense_layers']:
-        shared = tf.keras.layers.Dense(l['size'], activation=l['activation'])(shared)
-
-    output = tf.keras.layers.Dense(1)(shared)
-    model = tf.keras.Model(inputs=[state_in, action_in], outputs=output, name=name)
-
-    model.compile(
-        optimizer=tf.keras.optimizers.get(config['model_config']['q_optimizer']),
-        loss=tf.keras.losses.get(config['model_config']['loss']),
-    )
-
-    return model
-
-
-def get_policy_model(env, config, name):
-    action_shape = env.action_space.sample().shape  # (76, )
-    state_shape = env.observation_space.sample().shape  # (76, 5)
-    adj = env.get_adjacency_matrix()
+    state_shape = env.observation_space.sample().shape  # (76, 2)
 
     state_in = tf.keras.Input(shape=state_shape)
-    shared = state_in
+    # action_in = tf.keras.Input(shape=action_shape)
 
-    for l in config['model_config']['conv_layers']:
-        shared = GraphConvolutionLayer(l['size'], adj, activation=l['activation'])(shared)
+    for i, l in enumerate(config['model_config']['dense_layers']):
+        if i == 0:
+            centroid_network = tf.keras.layers.Dense(l['size'], activation=l['activation'],
+                                                     name=f'centroids_network_{i}')(state_in)
+        else:
+            centroid_network = tf.keras.layers.Dense(l['size'], activation=l['activation'],
+                                                     name=f'centroids_network_{i}')(centroid_network)
 
-    flattened = tf.keras.layers.Flatten()(shared)
+    centroid_network = tf.keras.layers.Dense(action_shape[0] * config['model_config']['rbvf_centroids'],
+                                             activation='tanh', name='centroids_network')(centroid_network)
+    centroid_network = tf.keras.layers.Reshape((config['model_config']['rbvf_centroids'], action_shape[0]),
+                                               name='centroids_network_reshape')(centroid_network)
 
-    for l in config['model_config']['dense_layers']:
-        flattened = tf.keras.layers.Dense(l['size'], activation=l['activation'])(flattened)
+    for i, l in enumerate(config['model_config']['dense_layers']):
+        if i == 0:
+            value_network = tf.keras.layers.Dense(l['size'], activation=l['activation'], name=f'value_network_{i}')(
+                state_in)
+        else:
+            value_network = tf.keras.layers.Dense(l['size'], activation=l['activation'], name=f'value_network_{i}')(
+                value_network)
 
-    flattened = tf.keras.layers.Dense(action_shape[0], activation='relu')(flattened)
-    output = LNormOptimizerLayer(ord=config['env_config']['norm'], length=config['env_config']['epsilon'])(flattened)
+    value_network = tf.keras.layers.Dense(config['model_config']['rbvf_centroids'], activation='linear',
+                                          name='value_network')(value_network)
 
-    model = tf.keras.Model(inputs=state_in, outputs=output, name=name)
+    model = tf.keras.Model(inputs=state_in, outputs=[centroid_network, value_network], name=name)
     model.compile(
         loss=tf.keras.losses.get(config['model_config']['loss']),
-        optimizer=tf.keras.optimizers.get(config['model_config']['policy_optimizer']),
+        optimizer=tf.keras.optimizers.get(config['model_config']['optimizer']),
     )
     return model
 
 
-class DDPGModel:
-    def __init__(self, env, config):
+class CAQLModel:
+    def __init__(self, env, config):  # purpose can be either 'agent' or 'target'
         self.q_model = get_q_model(env, config, name='q_model')
         self.target_q_model = get_q_model(env, config, name='target_q_model')
-        self.policy = get_policy_model(env, config, name='policy')
-        self.target_policy = get_policy_model(env, config, name='target_policy')
         self.sync_weights()
         self.config = config
         self.env = env
 
+    # @tf.function
+    def rbf(self, actions_2d, centroids):
+        diff_norm = cdist(centroids, actions_2d)
+        diff_norm *= -1 * self.config['model_config']['beta']
+        return tf.nn.softmax(diff_norm, axis=2)
+
+    # @tf.function
+    def rbf_action(self, actions, centroids):
+        diff_norm = centroids - tf.expand_dims(actions, axis=1)
+        diff_norm = diff_norm ** 2
+        diff_norm = tf.reduce_sum(diff_norm, axis=2)
+        diff_norm = tf.sqrt(diff_norm + 1e-7)
+        diff_norm = -1 * self.config['model_config']['beta'] * diff_norm
+        weights = tf.nn.softmax(diff_norm, axis=1)  # batch x N
+        return weights
+
+    # @tf.function
+    def get_optimal_action_value(self, model, states):
+        centroids, values = model(states)  # (batch_size, centroid_count, num_action), (batch_size, centroid_count)
+        weights = self.rbf(centroids, centroids)  # (batch_size, centroid_count, centroid_count)
+        qs = tf.squeeze(tf.matmul(weights, tf.expand_dims(values, axis=2)), axis=2)  # (batch_size, centroid_count)
+
+        return tf.gather(centroids, tf.argmax(qs, axis=1), batch_dims=1), tf.reduce_max(qs, axis=1)
+
+    # @tf.function
+    def get_q_value(self, model, states, actions):
+        centroids, values = model(states)  # (batch_size, centroid_count, num_action), (batch_size, centroid_count)
+        weights = self.rbf_action(actions, centroids)  # (batch_size, centroid_count, centroid_count)
+        qs = tf.squeeze(weights) * values  # (batch_size, centroid_count)
+        return tf.reduce_sum(qs, axis=1)
+
+    # @tf.function
+    def policy(self, states):
+        return self.get_optimal_action_value(self.target_q_model, states)[0]
+
     def sync_weights(self):
         self.q_model.set_weights(self.target_q_model.get_weights())
-        self.policy.set_weights(self.target_policy.get_weights())
 
     def summary(self, print_fn):
         self.q_model.summary(print_fn=print_fn)
         self.target_q_model.summary(print_fn=print_fn)
-        self.policy.summary(print_fn=print_fn)
 
-    @tf.function
+    # @tf.function
     def train(self, states, actions, next_states, rewards, dones):
-        # Update Critic
-        y = rewards + (1 - dones) * self.config['rl_config']['gamma'] * \
-            self.target_q_model([next_states, self.target_policy(next_states, training=True)], training=True)
-        critic_value = self.q_model([states, actions], training=True)
-        critic_loss = self.q_model.loss(y, critic_value)
-        critic_grads = tf.gradients(critic_loss, self.q_model.trainable_variables)
-        self.q_model.optimizer.apply_gradients(zip(critic_grads, self.q_model.trainable_variables))
+        with tf.GradientTape() as tape:
 
-        # Update Actor
-        policy_actions = self.policy(states, training=True)
-        actor_loss = -tf.reduce_mean(self.q_model([states, policy_actions], training=True))
-        actor_grads = tf.gradients(actor_loss, self.policy.trainable_variables)
-        self.policy.optimizer.apply_gradients(zip(actor_grads, self.policy.trainable_variables))
+            current_q_values = self.get_q_value(self.q_model, states, actions)
+            _, next_q_values = self.get_optimal_action_value(self.target_q_model, next_states)
+            target_q_values = rewards[:, 0] + (1 - dones[:, 0]) * self.config['rl_config']['gamma'] * next_q_values
+
+            loss = self.q_model.compiled_loss(target_q_values, current_q_values)
+
+        # grads = tf.gradients(loss, self.q_model.trainable_variables)
+        grads = tape.gradient(loss, self.q_model.trainable_variables)
+        self.q_model.optimizer.apply_gradients(zip(grads, self.q_model.trainable_variables))
 
         # Update Target Networks
         self.update_target_model()
 
         return dict(
-            average_actions=tf.reduce_mean(self.policy(states, training=False), axis=1),
-            q=dict(loss=critic_loss, r2=r2(y, critic_value), max_q=tf.reduce_max(y), min_q=tf.reduce_min(y), mean_q=tf.reduce_mean(y)),
-            policy=dict(loss=actor_loss, r2=r2(self.target_policy(states, training=False), self.policy(states, training=False)))
+            average_actions=tf.reduce_mean(actions,
+                                           axis=0),
+            q=dict(
+                loss=loss,
+                r2=r2(current_q_values, target_q_values),
+                max_q=tf.reduce_max(target_q_values),
+                min_q=tf.reduce_min(target_q_values),
+                mean_q=tf.reduce_mean(target_q_values)
+            )
         )
 
     @tf.function
     def update_target_model(self):
         for var, target_var in zip(self.q_model.trainable_variables, self.target_q_model.trainable_variables):
-            target_var.assign(
-                self.config['rl_config']['tau'] * var + (1 - self.config['rl_config']['tau']) * target_var)
-
-        for var, target_var in zip(self.policy.trainable_variables, self.target_policy.trainable_variables):
             target_var.assign(
                 self.config['rl_config']['tau'] * var + (1 - self.config['rl_config']['tau']) * target_var)
 
@@ -147,18 +155,12 @@ class Agent(Process):
 
         self.model = None
         self.env = None
+        self.render_env = None
 
         self.logger.info(f'Agent {self.index} created.')
 
         self.obs = None
         self.done = False
-
-        self.episode_lengths = []
-        self.episode_rewards = []
-        self.discounted_rewards = []
-        self.rewards = 0
-        self.count = 0
-        self.discounted_reward = 0
 
     def run(self) -> None:
         self.logger.info(f'Initializing Agent {self.index}')
@@ -171,14 +173,20 @@ class Agent(Process):
             [tf.config.LogicalDeviceConfiguration(memory_limit=self.config['training_config']['agent_gpu_memory'])])
 
         self.logger.info(f'Initializing environment.')
-        self.env = TransportationNetworkEnvironment(self.config['env_config'])
-
-        self.logger.info(f'Initializing model.')
-        self.model = DDPGModel(self.env, self.config)
-
-        self.env = gym.wrappers.TimeLimit(self.env, max_episode_steps=self.config['env_config']['horizon'])
-        self.obs = self.env.reset()
+        self.env = gym.wrappers.TimeLimit(gym.make('LunarLander-v2', continuous=True),
+                                          max_episode_steps=2 * self.config['env_config']['time_limit'])
+        self.obs = self.env.reset()[0]
         self.done = False
+
+        self.render_env = gym.wrappers.record_video.RecordVideo(
+            env=gym.wrappers.TimeLimit(
+                gym.make('LunarLander-v2', continuous=True, render_mode='rgb_array'),
+                max_episode_steps=self.config['env_config']['time_limit']),
+            video_folder=f'{self.config["training_config"]["logdir"]}/videos/',
+            episode_trigger=lambda episode: True
+        )
+        self.logger.info(f'Initializing model.')
+        self.model = CAQLModel(self.env, self.config)
         self.logger.info(f'Initializing exploration strategy.')
         self.noise = getattr(util.rl.exploration, self.config['rl_config']['exploration']['type']) \
             (**self.config['rl_config']['exploration']['config'], shape=self.env.action_space.sample().shape)
@@ -208,33 +216,37 @@ class Agent(Process):
                     self.logger.debug(f'Agent {self.index} received test message.')
                     stat = self.test_trained_model()
                     self.pipe.send(dict(type='test', stat=stat))
+                elif message['type'] == 'render':
+                    self.logger.debug(f'Agent {self.index} received render message.')
+                    stat = self.render()
+                    self.pipe.send(dict(type='rendered', stat=stat))
             except Exception as e:
                 self.logger.exception(e)
                 self.pipe.send(dict(type='error', error=str(e)))
 
     def get_trajectories(self):
         start_time = datetime.now()
+        count = 0
+        rewards = 0
+        discounted_rewards = 0
         experiences = []
         # action = self.heuristics[0].predict(obs)
 
-        for i in range(self.config['training_config']['agent_batch_size']):
+        for i in range(self.config['env_config']['time_limit']):
             if self.done:
-                self.episode_lengths.append(self.count)
-                self.episode_rewards.append(self.rewards)
-                self.discounted_rewards.append(self.discounted_reward)
-                self.count = 0
-                self.rewards = 0
-                self.discounted_reward = 0
                 self.done = False
-                self.obs = self.env.reset()
+                self.obs = self.env.reset()[0]
 
             # if self.epsilon():
             #     action = self.env.action_space.low + np.random.rand(self.env.action_space.shape[0]) * (
             #             self.env.action_space.high - self.env.action_space.low)
             # else:
-            action = self.model.target_policy(tf.expand_dims(self.obs, axis=0))[0].numpy()
-            action += self.noise()
+            if np.random.random() < 0.7:
+                action = np.random.random(2) * 2 - 1
+            else:
+                action = self.model.policy(tf.expand_dims(self.obs, axis=0))[0].numpy()
 
+            # action += self.noise()
             next_obs, reward, self.done, truncated, info = self.env.step(action)
 
             experiences.append(dict(
@@ -246,43 +258,38 @@ class Agent(Process):
             ))
 
             self.obs = next_obs
-            self.count += 1
-            self.rewards += reward
-            self.discounted_reward += reward * self.config['rl_config']['gamma'] ** self.count
+            count += 1
+            rewards += reward
+            discounted_rewards += reward * self.config['rl_config']['gamma'] ** count
 
             if truncated:
-                self.done = True
+                self.obs = self.env.reset()[0]
+                break
 
         # print(f'Experience size: {sys.getsizeof(experiences)} | len: {len(experiences)}')
 
-        stats = dict(
-            cumulative_reward=np.mean(self.rewards),
-            average_reward=np.sum(self.episode_rewards) / np.sum(self.episode_lengths),
-            discounted_reward=np.mean(self.discounted_rewards),
-            episode_length=np.mean(self.episode_lengths),
+        return experiences, dict(
+            cumulative_reward=rewards,
+            average_reward=rewards / count,
+            discounted_reward=discounted_rewards,
+            episode_length=count,
             noise=self.noise.get_current_noise(),
             time=datetime.now() - start_time,
             # time_report=' ~ '.join([f'{timer}: {time / iterations:.3f}(s/i)' for timer, (time, iterations) in
             #                           visualize.timer_stats.items()])
         )
 
-        self.episode_rewards = []
-        self.discounted_rewards = []
-        self.episode_lengths = []
-
-        return experiences, stats
-
     def test_trained_model(self):
         start_time = datetime.now()
-        env = gym.wrappers.TimeLimit(TransportationNetworkEnvironment(self.config['env_config']), max_episode_steps=self.config['env_config']['horizon'])
-        obs = env.reset()
+        env = gym.wrappers.TimeLimit(gym.make('LunarLander-v2', continuous=True),
+                                     max_episode_steps=self.config['env_config']['time_limit'])
+        obs = env.reset()[0]
         done = False
         count = 0
         rewards = 0
         discounted_rewards = 0
         while not done:
-            actions = self.model.target_policy(np.expand_dims(obs, axis=0))
-            action = actions[0].numpy()
+            action = self.model.policy(np.expand_dims(obs, axis=0))[0].numpy()
 
             obs, reward, done, truncated, info = env.step(action)
             count += 1
@@ -300,15 +307,26 @@ class Agent(Process):
             time=datetime.now() - start_time
         )
 
+    def render(self):
+        obs = self.render_env.reset()[0]
+        done = False
+        while not done:
+            action = self.model.policy(np.expand_dims(obs, axis=0))[0].numpy()
+
+            obs, reward, done, truncated, info = self.render_env.step(action)
+
+            if truncated:
+                break
+
     def update_model_weights(self, new_weights):
-        self.model.target_policy.set_weights(new_weights)
+        self.model.target_q_model.set_weights(new_weights)
 
 
 class Trainer(Process):
 
     def __init__(self, config, pipe) -> None:
         super().__init__(name='Trainer')
-        self.model: DDPGModel = None
+        self.model: CAQLModel = None
         self.env = None
         self.logger = logging.getLogger('Trainer')
         self.config = config
@@ -321,7 +339,7 @@ class Trainer(Process):
     def update_model(self, samples):
         states = samples['states']
         actions = samples['actions']
-        rewards = samples['rewards'] * self.config['rl_config']['reward_scale']
+        rewards = samples['rewards']
         next_states = samples['next_states']
         dones = samples['dones']
 
@@ -346,9 +364,9 @@ class Trainer(Process):
 
         self.logger.info(f'Initializing trainer.')
         self.logger.info(f'Initializing trainer environment variables.')
-        self.env = TransportationNetworkEnvironment(self.config['env_config'])
+        self.env = gym.make('LunarLander-v2', continuous=True)
         self.logger.info(f'Initializing trainer model.')
-        self.model = DDPGModel(self.env, self.config)
+        self.model = CAQLModel(self.env, self.config)
         self.model.summary(print_fn=print)
         self.logger.info(f'Trainer initialized.')
 
@@ -359,16 +377,12 @@ class Trainer(Process):
         self.logger.debug(f'Storing model to {path}')
         self.model.q_model.save_weights(path + f'q_weights-{self.training_step}.h5')
         self.model.target_q_model.save_weights(path + f'target_q_weights-{self.training_step}.h5')
-        self.model.policy.save_weights(path + f'policy_weights-{self.training_step}.h5')
-        self.model.target_policy.save_weights(path + f'target_policy_weights-{self.training_step}.h5')
 
     def load_model(self, run_id, step):
         self.logger.debug(f'Loading model from {run_id}')
         self.model.q_model.load_weights('logs/' + run_id + f'/weights/q_weights-{step}.h5')
         self.model.target_q_model.load_weights('logs/' + run_id + f'/weights/target_q_weights-{step}.h5')
-        self.model.policy.load_weights('logs/' + run_id + f'/weights/policy_weights-{step}.h5')
-        self.model.target_policy.load_weights('logs/' + run_id + f'/weights/target_policy_weights-{step}.h5')
-        return self.model.target_policy.get_weights()
+        return self.model.target_q_model.get_weights()
 
     def run(self) -> None:
         self.init()
@@ -384,7 +398,7 @@ class Trainer(Process):
                         dict(
                             type='model_updated',
                             stats={k: v.numpy() if isinstance(v, tf.Tensor) else v for k, v in stats.items()},
-                            weights=self.model.target_policy.get_weights()
+                            weights=self.model.target_q_model.get_weights()
                         )
                     )
                 elif msg['type'] == 'add_samples':
@@ -453,10 +467,10 @@ class Manager:
 
     def start(self):
         self.agents = []
-        for i in range(self.config['training_config']['num_agents']):
+        for i in range(config['training_config']['num_agents']):
             self.logger.debug(f'Creating agent {i}.')
             parent_conn, child_conn = Pipe()
-            agent = Agent(i, self.config, child_conn)
+            agent = Agent(i, config, child_conn)
             self.agents.append(
                 dict(
                     agent=agent,
@@ -465,7 +479,7 @@ class Manager:
             )
 
         self.trainer_pipe, pipe = Pipe()
-        self.trainer = Trainer(self.config, pipe)
+        self.trainer = Trainer(config, pipe)
 
         self.tf_logger_pipe, pipe = Pipe()
         self.tf_logger = TFLogger(self.config, pipe)
@@ -586,7 +600,7 @@ class Manager:
                     assert ack['type'] == 'model_updated'
                     stats = ack['stats']
                     q_stats = stats['q']
-                    policy_stats = stats['policy']
+                    # policy_stats = stats['policy']
                     average_action_0 = stats['average_actions'][0]
                     average_action_1 = stats['average_actions'][1]
 
@@ -639,6 +653,12 @@ class Manager:
                     self.log_scalar('env/test_reward', np.average([stat['cumulative_reward'] for stat in stats]),
                                     self.training_step)
 
+                    self.agents[0]['pipe'].send(dict(
+                        type='render'
+                    ))
+                    ack = self.agents[0]['pipe'].recv()
+                    assert ack['type'] == 'rendered', f'Failed to render. {ack}'
+
                     self.trainer_pipe.send(dict(
                         type='store_model'
                     ))
@@ -648,91 +668,63 @@ class Manager:
             # pbar.set_description(f'{time_report}')
 
 
-def run(run_id, epsilon=30, norm=2, congestion=True):
+if __name__ == '__main__':
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     config = dict(
         env_config=dict(
-            city='SiouxFalls',
-            horizon=50,
-            epsilon=epsilon,
-            norm=norm,
-            frac=0.5,
-            num_sample=20,
-            render_mode=None,
-            reward_multiplier=1.0,
-            congestion=True,
-            trips=dict(
-                type='demand_file',
-                trips=Trip.trips_using_demand_file('Sirui/traffic_data/sf_demand.txt'),
-                strategy='random',
-                count=5
-            ),
-            rewarding_rule='vehicle_count',
+            time_limit=1024
         ),
         model_config=dict(
-            q_optimizer=dict(
-                class_name='Adam',
+            optimizer=dict(
+                class_name='RMSprop',
                 config=dict(
-                    learning_rate=1e-3
+                    learning_rate=3e-3
                 )
             ),
-            policy_optimizer=dict(
-                class_name='Adam',
-                config=dict(
-                    learning_rate=1e-3
-                )
-            ),
+            rbvf_centroids=4,
             loss='MeanSquaredError',
-            conv_layers=[
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=64, activation='elu'),
-                dict(size=4, activation='elu'),
-            ],
             dense_layers=[
-                dict(size=128, activation='elu'),
-                dict(size=128, activation='elu'),
-            ]
+                dict(size=256, activation='relu'),
+                dict(size=256, activation='relu'),
+            ],
+            beta=0.5,
         ),
         rl_config=dict(
+            # exploration=dict(
+            #     type='NoiseDecay',
+            #     config=dict(
+            #         noise_start=0.5,
+            #         noise_end=0.1,
+            #         noise_decay=40_000
+            #     )
             exploration=dict(
-                # type='OUActionNoise',
-                # config=dict(
-                #     theta=0.15,
-                #     mean=0,
-                #     std_deviation=1.0,
-                #     dt=0.01,
-                #     target_scale=0.02,
-                #     anneal=3_000_000
-                # )
-                type='NoiseDecay',
+                type='OUActionNoise',
                 config=dict(
-                    noise_start=5.0,
-                    noise_end=0.1,
-                    noise_decay=1_000_000
+                    theta=0.15,
+                    mean=0,
+                    std_deviation=0.2,
+                    dt=0.01,
+                    target_scale=0.01,
+                    anneal=200_000
                 )
             ),
             tau=0.002,
-            gamma=0.97,
+            gamma=0.99,
             batch_size=256,
-            buffer_size=5_000_000,
-            num_episodes=10000,
-            reward_scale=1.0
+            buffer_size=500_000,
+            num_episodes=10000
         ),
         training_config=dict(
-            num_agents=3,
+            num_agents=4,
             num_training_per_epoch=16,
             run_id=run_id,
             agent_gpu_memory=512,
             trainer_gpu_memory=512,
             logdir=f'logs/{run_id}',
             checkpoint_interval=20,
-            agent_batch_size=256,
             # resume_from=dict(
-            #     run_id='20230217-032444',
-            #     step=25616
+            #     run_id='20230214-154600',
+            #     step=2248
             # )
         ),
     )
@@ -752,14 +744,3 @@ def run(run_id, epsilon=30, norm=2, congestion=True):
     except BaseException as e:
         logger.exception(f'Exception {e}')
     manager.killall()
-
-
-if __name__ == '__main__':
-
-    argparse = argparse.ArgumentParser()
-    argparse.add_argument('--epsilon', type=float, default=30)
-    argparse.add_argument('--norm', type=int, default=2)
-    argparse.add_argument('--congestion', type=bool, default=True)
-
-    args = argparse.parse_args()
-    run(f'{datetime.now().strftime("%Y%m%d-%H%M%S")}-{args.norm}norm{args.epsilon}', args.epsilon, args.norm, args.congestion)
