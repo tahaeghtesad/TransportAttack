@@ -1,5 +1,6 @@
 import logging
 import sys
+import copy
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,10 +22,10 @@ if __name__ == '__main__':
     config = dict(
         city='SiouxFalls',
         horizon=50,
-        epsilon=30,
-        norm=5,
+        epsilon=5,
+        norm=1,
         frac=0.5,
-        num_sample=20,
+        num_sample=50,
         render_mode=None,
         reward_multiplier=1.0,
         congestion=True,
@@ -32,11 +33,12 @@ if __name__ == '__main__':
             type='demand_file',
             trips=Trip.trips_using_demand_file('Sirui/traffic_data/sf_demand.txt'),
             strategy='random',
-            count=10
+            count=5
         ),
         rewarding_rule='vehicle_count',
-        repeat=10
-        )
+        repeat=100,
+        observation_type='vector',
+    )
 
     logger.info(f'Config: {config}')
 
@@ -52,15 +54,18 @@ if __name__ == '__main__':
             attack_heuristics.Random((76, ), config['norm'], config['epsilon'], config['frac'], 'continuous')),
         PostProcessHeuristic(
             attack_heuristics.Random((76, ), config['norm'], config['epsilon'], config['frac'], 'discrete')),
-        # PostProcessHeuristic(
-            # attack_heuristics.MultiRandom(env.action_space, config['num_sample'], 'continuous', config['frac'],
-            #                               config['norm'], config['epsilon'])),
-        # PostProcessHeuristic(
-            # attack_heuristics.MultiRandom(env.action_space, config['num_sample'], 'discrete', config['frac'],
-            #                               config['norm'], config['epsilon'])),
         PostProcessHeuristic(
             attack_heuristics.GreedyRiderVector(config['epsilon'], config['norm']),
         )
+    ]
+
+    graph_strategies = [
+        PostProcessHeuristic(
+            attack_heuristics.MultiRandom((76,), config['num_sample'], 'continuous', config['frac'],
+                                          config['norm'], config['epsilon'])),
+        PostProcessHeuristic(
+            attack_heuristics.MultiRandom((76,), config['num_sample'], 'discrete', config['frac'],
+                                          config['norm'], config['epsilon'])),
     ]
 
     rewarding_rules = ['vehicle_count', 'step_count', 'vehicles_finished']
@@ -75,15 +80,20 @@ if __name__ == '__main__':
     rewarding_rule = 'vehicle_count'
     config.update(dict(rewarding_rule=rewarding_rule))
 
-    step_data = np.zeros((config['repeat'], len(strategies)))
-    cumulative_reward_data = np.zeros((config['repeat'], len(strategies)))
-    discounted_reward_data = np.zeros((config['repeat'], len(strategies)))
+    step_data = np.zeros((config['repeat'], len(strategies) + len(graph_strategies)))
+    cumulative_reward_data = np.zeros((config['repeat'], len(strategies) + len(graph_strategies)))
+    discounted_reward_data = np.zeros((config['repeat'], len(strategies) + len(graph_strategies)))
 
-    env = gym.wrappers.TimeLimit(TransportationNetworkEnvironment(config), config['horizon'])
+    env = gym.wrappers.TimeLimit(TransportationNetworkEnvironment(copy.deepcopy(config)), config['horizon'])
+    print(env.observation_space)
+    config['observation_type'] = 'graph'
+    env_graph = gym.wrappers.TimeLimit(TransportationNetworkEnvironment(copy.deepcopy(config)), config['horizon'])
+    print(env_graph.observation_space)
 
-    gamma = 0.95
 
-    for s_num, strategy in enumerate(strategies):
+    gamma = 0.97
+
+    for s_num, strategy in enumerate(strategies + graph_strategies):
         logger.info(f'Running Strategy {strategy.name} for {config["repeat"]} trials...')
 
         discounted_rewards = []
@@ -91,25 +101,30 @@ if __name__ == '__main__':
         step_counts = []
 
         for trial in range(config['repeat']):
-            o = env.reset()
+            if s_num > len(strategies) - 1:
+                o = env_graph.reset()
+            else:
+                o = env.reset()
 
             cumulative_reward = 0
             discounted_reward = 0
 
             d = False
+            t = False
             step_count = 0
 
-            while not d:
+            while not d and not t:
                 a = strategy.predict(o)
-                o, r, d, t, i = env.step(a)
+                if s_num > len(strategies) - 1:
+                    o, r, d, t, i = env_graph.step(a)
+                else:
+                    o, r, d, t, i = env.step(a)
                 cumulative_reward += r
                 discounted_reward += gamma ** env.time_step * r
                 logger.debug(f'Reward: {r:.2f} - Done {d}')
                 logger.debug(f'Observation:\n{o}')
                 step_count += 1
 
-                if t:
-                    break
 
             discounted_rewards.append(discounted_reward)
             cumulative_rewards.append(cumulative_reward)
@@ -156,23 +171,25 @@ if __name__ == '__main__':
     # plt.show()
     # plt.clf()
 
-    plt.boxplot(cumulative_reward_data, labels=[s.name for s in strategies])
+    plt.boxplot(cumulative_reward_data, labels=[s.name for s in strategies + graph_strategies])
     plt.xticks(rotation=45)
     plt.ylabel(f'Average Cumulative Reward')
     plt.xlabel('Strategy')
-    # plt.title(desc)
+    plt.title(f'{config["norm"]}-norm/$\\epsilon$={config["epsilon"]}')
     plt.subplots_adjust(bottom=.4)
     plt.grid()
+    plt.savefig(f'cumulative_reward_{config["norm"]}-norm_{config["epsilon"]}.png')
     # plt.savefig(f'cumulative_reward_{rewarding_rule}.png')
-    plt.show()
+    # plt.show()
     plt.clf()
 
-    plt.boxplot(step_data, labels=[s.name for s in strategies])
+    plt.boxplot(step_data, labels=[s.name for s in strategies + graph_strategies])
     plt.xticks(rotation=45)
     plt.ylabel(f'Average Step')
     plt.xlabel('Strategy')
+    plt.title(f'{config["norm"]}-norm/$\\epsilon$={config["epsilon"]}')
     plt.subplots_adjust(bottom=.4)
     plt.grid()
-    # plt.savefig('step_count.png')
-    plt.show()
+    plt.savefig(f'step_count_{config["norm"]}-norm_{config["epsilon"]}.png')
+    # plt.show()
     plt.clf()

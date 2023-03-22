@@ -50,7 +50,16 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
             self.pos = nx.kamada_kawai_layout(self.base)  # positions for all nodes
 
         self.action_space = gym.spaces.Box(-np.inf, np.inf, (self.base.number_of_edges(),))
-        self.observation_space = gym.spaces.Box(0, np.inf, (self.base.number_of_edges(), 5,))
+
+        if self.config['observation_type'] == 'vector':
+            self.observation_space = gym.spaces.Box(0, np.inf, (self.base.number_of_edges(), 5,))
+        elif self.config['observation_type'] == 'graph':
+            self.observation_space = gym.spaces.Graph(
+                node_space=gym.spaces.Box(0, np.inf, (0,)),
+                edge_space=gym.spaces.Box(0, np.inf, (5,)),
+            )
+        else:
+            raise Exception(f'Unknown observation type: {self.config["observation_type"]}')
 
     def reset(
             self,
@@ -80,7 +89,10 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
 
         self.finished_previous_step = 0
 
-        return self.__get_current_observation_edge_vector()
+        if self.config['observation_type'] == 'vector':
+            return self.__get_current_observation_edge_vector()
+        elif self.config['observation_type'] == 'graph':
+            return self.__get_current_observation_graph()
 
     def step(self, action) -> Union[
         Tuple[ObsType, float, bool, bool, dict], Tuple[ObsType, float, bool, bool, dict]
@@ -163,7 +175,11 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
 
         done = self.finished
         info = dict()
-        obs = self.__get_current_observation_edge_vector()
+
+        if self.config['observation_type'] == 'vector':
+            obs = self.__get_current_observation_edge_vector()
+        elif self.config['observation_type'] == 'graph':
+            obs = self.__get_current_observation_graph()
 
         if self.config['rewarding_rule'] == 'vehicle_count':
             reward = self.__get_reward()
@@ -324,7 +340,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
 
         return math.ceil(free_flow_time * (1.0 + 0.15 * (on_edge * self.config['congestion'] / capacity) ** 4))
 
-    def __get_current_observation(self) -> Tuple[gym.spaces.GraphInstance, gym.spaces.GraphInstance]:
+    def __get_current_observation_graph(self) -> Tuple[gym.spaces.GraphInstance, gym.spaces.GraphInstance]:
         # I am going to do something that is not intuitive at all. I return two graphs:
         # (NetworkGraph) one is the original base graph.
         # (DecisionGraph) The second is a graph with:

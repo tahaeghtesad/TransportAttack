@@ -31,6 +31,7 @@ def get_q_model(env, config, name):
         else:
             centroid_network = tf.keras.layers.Dense(l['size'], activation=l['activation'],
                                                      name=f'centroids_network_{i}')(centroid_network)
+        centroid_network = tf.keras.layers.Dropout(l['dropout'], name=f'centroids_network_{i}_dropout')(centroid_network)
 
     centroid_network = tf.keras.layers.Dense(action_shape[0] * config['model_config']['rbvf_centroids'],
                                              activation='tanh', name='centroids_network')(centroid_network)
@@ -44,6 +45,7 @@ def get_q_model(env, config, name):
         else:
             value_network = tf.keras.layers.Dense(l['size'], activation=l['activation'], name=f'value_network_{i}')(
                 value_network)
+        value_network = tf.keras.layers.Dropout(l['dropout'], name=f'value_network_{i}_dropout')(value_network)
 
     value_network = tf.keras.layers.Dense(config['model_config']['rbvf_centroids'], activation='linear',
                                           name='value_network')(value_network)
@@ -91,11 +93,11 @@ class CAQLModel:
     # @tf.function
     def get_q_value(self, model, states, actions):
         centroids, values = model(states)  # (batch_size, centroid_count, num_action), (batch_size, centroid_count)
-        weights = self.rbf_action(actions, centroids)  # (batch_size, centroid_count, centroid_count)
+        weights = self.rbf_action(actions, centroids)  # (batch_size, action_count, centroid_count)
         qs = tf.squeeze(weights) * values  # (batch_size, centroid_count)
         return tf.reduce_sum(qs, axis=1)
 
-    # @tf.function
+    @tf.function
     def policy(self, states):
         return self.get_optimal_action_value(self.target_q_model, states)[0]
 
@@ -108,12 +110,13 @@ class CAQLModel:
 
     # @tf.function
     def train(self, states, actions, next_states, rewards, dones):
+        rewards = tf.clip_by_value(rewards, -self.config['rl_config']['reward_clip'], self.config['rl_config']['reward_clip'])
+        next_actions, next_q_values = self.get_optimal_action_value(self.target_q_model, next_states)
+        target_q_values = rewards + (1 - dones) * self.config['rl_config']['gamma'] * next_q_values
+
         with tf.GradientTape() as tape:
 
             current_q_values = self.get_q_value(self.q_model, states, actions)
-            _, next_q_values = self.get_optimal_action_value(self.target_q_model, next_states)
-            target_q_values = rewards[:, 0] + (1 - dones[:, 0]) * self.config['rl_config']['gamma'] * next_q_values
-
             loss = self.q_model.compiled_loss(target_q_values, current_q_values)
 
         # grads = tf.gradients(loss, self.q_model.trainable_variables)
@@ -123,17 +126,21 @@ class CAQLModel:
         # Update Target Networks
         self.update_target_model()
 
-        return dict(
-            average_actions=tf.reduce_mean(actions,
-                                           axis=0),
-            q=dict(
-                loss=loss,
-                r2=r2(current_q_values, target_q_values),
-                max_q=tf.reduce_max(target_q_values),
-                min_q=tf.reduce_min(target_q_values),
-                mean_q=tf.reduce_mean(target_q_values)
-            )
-        )
+        # return dict(
+        #     average_actions=tf.reduce_mean(next_actions,
+        #                                    axis=0),
+        #     max_actions=tf.reduce_max(next_actions,
+        #                                 axis=0),
+        #     min_actions=tf.reduce_min(next_actions,
+        #                                 axis=0),
+        #     q=dict(
+        #         loss=loss,
+        #         r2=r2(current_q_values, target_q_values),
+        #         max_q=tf.reduce_max(target_q_values),
+        #         min_q=tf.reduce_min(target_q_values),
+        #         mean_q=tf.reduce_mean(target_q_values)
+        #     )
+        # )
 
     @tf.function
     def update_target_model(self):
@@ -161,6 +168,8 @@ class Agent(Process):
 
         self.obs = None
         self.done = False
+        self.truncated = False
+        self.epsilon = None
 
     def run(self) -> None:
         self.logger.info(f'Initializing Agent {self.index}')
@@ -177,6 +186,7 @@ class Agent(Process):
                                           max_episode_steps=2 * self.config['env_config']['time_limit'])
         self.obs = self.env.reset()[0]
         self.done = False
+        self.truncated = False
 
         self.render_env = gym.wrappers.record_video.RecordVideo(
             env=gym.wrappers.TimeLimit(
@@ -188,8 +198,10 @@ class Agent(Process):
         self.logger.info(f'Initializing model.')
         self.model = CAQLModel(self.env, self.config)
         self.logger.info(f'Initializing exploration strategy.')
-        self.noise = getattr(util.rl.exploration, self.config['rl_config']['exploration']['type']) \
-            (**self.config['rl_config']['exploration']['config'], shape=self.env.action_space.sample().shape)
+        self.noise = getattr(util.rl.exploration, self.config['rl_config']['noise']['type']) \
+            (**self.config['rl_config']['noise']['config'], shape=self.env.action_space.sample().shape)
+        self.epsilon = getattr(util.rl.exploration, self.config['rl_config']['epsilon']['type']) \
+            (**self.config['rl_config']['epsilon']['config'])
 
         self.logger.info(f'Agent {self.index} started.')
         while not self.finished:
@@ -232,22 +244,21 @@ class Agent(Process):
         experiences = []
         # action = self.heuristics[0].predict(obs)
 
-        for i in range(self.config['env_config']['time_limit']):
-            if self.done:
-                self.done = False
-                self.obs = self.env.reset()[0]
+        self.obs = self.env.reset()[0]
+        self.done = False
+        self.truncated = False
 
-            # if self.epsilon():
-            #     action = self.env.action_space.low + np.random.rand(self.env.action_space.shape[0]) * (
-            #             self.env.action_space.high - self.env.action_space.low)
-            # else:
-            if np.random.random() < 0.7:
-                action = np.random.random(2) * 2 - 1
+        while not self.done and not self.truncated:
+
+            if self.epsilon():
+                action = self.env.action_space.low + np.random.rand(self.env.action_space.shape[0]) * (
+                        self.env.action_space.high - self.env.action_space.low)
             else:
                 action = self.model.policy(tf.expand_dims(self.obs, axis=0))[0].numpy()
 
-            # action += self.noise()
-            next_obs, reward, self.done, truncated, info = self.env.step(action)
+            action += self.noise()
+
+            next_obs, reward, self.done, self.truncated, info = self.env.step(action)
 
             experiences.append(dict(
                 state=self.obs,
@@ -262,18 +273,13 @@ class Agent(Process):
             rewards += reward
             discounted_rewards += reward * self.config['rl_config']['gamma'] ** count
 
-            if truncated:
-                self.obs = self.env.reset()[0]
-                break
-
-        # print(f'Experience size: {sys.getsizeof(experiences)} | len: {len(experiences)}')
-
         return experiences, dict(
             cumulative_reward=rewards,
             average_reward=rewards / count,
             discounted_reward=discounted_rewards,
             episode_length=count,
             noise=self.noise.get_current_noise(),
+            epsilon=self.epsilon.get_current_epsilon(),
             time=datetime.now() - start_time,
             # time_report=' ~ '.join([f'{timer}: {time / iterations:.3f}(s/i)' for timer, (time, iterations) in
             #                           visualize.timer_stats.items()])
@@ -285,19 +291,17 @@ class Agent(Process):
                                      max_episode_steps=self.config['env_config']['time_limit'])
         obs = env.reset()[0]
         done = False
+        truncated = False
         count = 0
         rewards = 0
         discounted_rewards = 0
-        while not done:
+        while not done and not truncated:
             action = self.model.policy(np.expand_dims(obs, axis=0))[0].numpy()
 
             obs, reward, done, truncated, info = env.step(action)
             count += 1
             rewards += reward
             discounted_rewards += reward * self.config['rl_config']['gamma'] ** count
-
-            if truncated:
-                break
 
         return dict(
             cumulative_reward=rewards,
@@ -310,13 +314,11 @@ class Agent(Process):
     def render(self):
         obs = self.render_env.reset()[0]
         done = False
-        while not done:
+        truncated = False
+        while not done and not truncated:
             action = self.model.policy(np.expand_dims(obs, axis=0))[0].numpy()
 
             obs, reward, done, truncated, info = self.render_env.step(action)
-
-            if truncated:
-                break
 
     def update_model_weights(self, new_weights):
         self.model.target_q_model.set_weights(new_weights)
@@ -336,20 +338,12 @@ class Trainer(Process):
                                               self.config['rl_config']['batch_size'])
         self.training_step = 0
 
-    def update_model(self, samples):
-        states = samples['states']
-        actions = samples['actions']
-        rewards = samples['rewards']
-        next_states = samples['next_states']
-        dones = samples['dones']
-
-        stats = self.model.train(states, actions, next_states, rewards, dones)
-
-        self.training_step += 1
-
-        return {**dict(
-            gamma=self.config['rl_config']['gamma'],
-        ), **stats}
+    # @tf.function
+    def update_model(self):
+        # tf.map_fn(lambda i: self.model.train(*self.replay_buffer.sample()), tf.range(self.config['training_config']['num_training_per_epoch'], dtype=tf.int32))
+        for _ in tqdm(range(self.config['training_config']['num_training_per_epoch'])):
+            self.model.train(*self.replay_buffer.sample())
+        self.training_step += self.config['training_config']['num_training_per_epoch']
 
     def init(self):
         gpus = tf.config.list_physical_devices('GPU')
@@ -392,19 +386,27 @@ class Trainer(Process):
             try:
                 if msg['type'] == 'update_model':
                     self.logger.debug(f'Updating model.')
-                    samples = self.replay_buffer.sample()
-                    stats = self.update_model(samples)
+                    # stats = self.update_model()
+                    self.update_model()
+                    # pickleable_stats = [
+                    #     {k: v.numpy() if isinstance(v, tf.Tensor) else v for k, v in current.items()}
+                    #     for current in stats
+                    # ]
                     self.pipe.send(
                         dict(
                             type='model_updated',
-                            stats={k: v.numpy() if isinstance(v, tf.Tensor) else v for k, v in stats.items()},
+                            # stats=pickleable_stats,
+                            stats=[],
                             weights=self.model.target_q_model.get_weights()
                         )
                     )
                 elif msg['type'] == 'add_samples':
                     self.logger.debug(f'adding samples.')
-                    self.replay_buffer.batch_add(msg['experiences'])
-                    self.pipe.send(dict(type='samples_added', total_experience=self.replay_buffer.size()))
+                    try:
+                        self.replay_buffer.batch_add(msg['experiences'])
+                        self.pipe.send(dict(type='samples_added', total_experience=self.replay_buffer.size()))
+                    except Exception as e:
+                        self.pipe.send(dict(type='error', error=e))
                 elif msg['type'] == 'store_model':
                     self.store_model()
                 elif msg['type'] == 'load_model':
@@ -444,6 +446,8 @@ class TFLogger(Process):
                     tf.summary.histogram(msg['name'], msg['value'], msg['step'])
                 elif msg['type'] == 'log_graph':
                     tf.summary.graph(msg['graph'])
+                elif msg['type'] == 'flush':
+                    tf.summary.flush()
                 else:
                     self.logger.error(f'Invalid Message {msg}')
             except Exception as e:
@@ -506,6 +510,12 @@ class Manager:
             graph=graph
         ))
 
+    def flush_summary(self):
+        self.tf_logger_pipe.send(dict(
+            type='flush',
+        ))
+
+
     def killall(self):
         for agent in self.agents:
             agent['agent'].kill()
@@ -556,17 +566,22 @@ class Manager:
                     msg = agent['pipe'].recv()
                     if msg['type'] == 'error':
                         raise Exception(msg['error'])
+
                     self.trainer_pipe.send(dict(
                         type='add_samples',
                         experiences=msg['experiences']
                     ))
                     infos.append(msg['info'])
                     total_samples += msg['info']['episode_length']
-                    experience_replay_buffer_size = self.trainer_pipe.recv()['total_experience']
+                    reply = self.trainer_pipe.recv()
+                    assert reply['type'] == 'samples_added', f'Invalid reply {reply}'
+                    experience_replay_buffer_size = reply['total_experience']
 
                 self.log_scalar('rl/total_samples', total_samples, self.training_step)
                 self.log_scalar('rl/experience_replay_buffer_size', experience_replay_buffer_size, self.training_step)
                 self.log_scalar('rl/noise', np.average([info['noise'] for info in infos]),
+                                self.training_step)
+                self.log_scalar('rl/epsilon', np.average([info['epsilon'] for info in infos]),
                                 self.training_step)
                 self.log_scalar('env/reward', np.average([info['cumulative_reward'] for info in infos]),
                                 self.training_step)
@@ -582,46 +597,53 @@ class Manager:
                                    self.training_step)
                 self.log_scalar('training/epoch_time', np.average([info['time'].total_seconds() for info in infos]),
                                 self.training_step)
+                self.flush_summary()
+
 
             with Timer('UpdateModel'):
-                for i in range(self.config['training_config']['num_training_per_epoch']):
-                    pbar.set_description(
-                        f'Updating model {i}/{self.config["training_config"]["num_training_per_epoch"]}...')
-
-                    start = datetime.now()
-                    self.trainer_pipe.send(
-                        dict(
-                            type='update_model'
-                        )
+                pbar.set_description('Updating model')
+                start = datetime.now()
+                self.trainer_pipe.send(
+                    dict(
+                        type='update_model'
                     )
-                    ack = self.trainer_pipe.recv()
-                    if ack['type'] == 'error':
-                        raise Exception(ack['error'])
-                    assert ack['type'] == 'model_updated'
-                    stats = ack['stats']
-                    q_stats = stats['q']
-                    # policy_stats = stats['policy']
-                    average_action_0 = stats['average_actions'][0]
-                    average_action_1 = stats['average_actions'][1]
+                )
+                ack = self.trainer_pipe.recv()
+                assert ack['type'] == 'model_updated', f'Invalid reply {ack}'
+                new_weights = ack['weights']
 
-                    new_weights = ack['weights']
-                    duration = (datetime.now() - start).total_seconds()
-
-                    self.log_scalar('env/average_action_0', average_action_0, self.training_step)
-                    self.log_scalar('env/average_action_1', average_action_1, self.training_step)
-
-                    self.log_scalar('rl/q_loss', q_stats['loss'], self.training_step)
-                    self.log_scalar('rl/gamma', stats['gamma'], self.training_step)
-                    self.log_scalar('rl/r2', q_stats['r2'], self.training_step)
-                    self.log_scalar('rl/max_q', q_stats['max_q'], self.training_step)
-                    self.log_scalar('rl/min_q', q_stats['min_q'], self.training_step)
-                    self.log_scalar('rl/mean_q', q_stats['mean_q'], self.training_step)
-                    self.log_scalar('constants/tau', self.config['rl_config']['tau'], self.training_step)
-                    self.log_scalar('training/train_time', duration, self.training_step)
+                for i, stats in enumerate(ack['stats']):
+                    pass
+                    # q_stats = stats['q']
+                    # # policy_stats = stats['policy']
+                    # average_action_0 = stats['average_actions'][0]
+                    # average_action_1 = stats['average_actions'][1]
+                    # min_action_0 = stats['min_actions'][0]
+                    # min_action_1 = stats['min_actions'][1]
+                    # max_action_0 = stats['max_actions'][0]
+                    # max_action_1 = stats['max_actions'][1]
+                    #
+                    #
+                    # self.log_scalar('env/average_action_0', average_action_0, self.training_step)
+                    # self.log_scalar('env/average_action_1', average_action_1, self.training_step)
+                    # self.log_scalar('env/min_action_0', min_action_0, self.training_step)
+                    # self.log_scalar('env/min_action_1', min_action_1, self.training_step)
+                    # self.log_scalar('env/max_action_0', max_action_0, self.training_step)
+                    # self.log_scalar('env/max_action_1', max_action_1, self.training_step)
+                    #
+                    # self.log_scalar('rl/q_loss', q_stats['loss'], self.training_step)
+                    # self.log_scalar('rl/gamma', stats['gamma'], self.training_step)
+                    # self.log_scalar('rl/r2', q_stats['r2'], self.training_step)
+                    # self.log_scalar('rl/max_q', q_stats['max_q'], self.training_step)
+                    # self.log_scalar('rl/min_q', q_stats['min_q'], self.training_step)
+                    # self.log_scalar('rl/mean_q', q_stats['mean_q'], self.training_step)
+                    # self.log_scalar('constants/tau', self.config['rl_config']['tau'], self.training_step)
                     # self.log_scalar('rl/policy_loss', policy_stats['loss'], self.training_step)
                     # self.log_scalar('rl/policy_r2', policy_stats['r2'], self.training_step)
 
-                    self.training_step += 1
+                self.training_step += self.config['training_config']['num_training_per_epoch']
+
+                self.log_scalar('training/train_time', (datetime.now() - start).total_seconds(), self.training_step)
 
                 pbar.set_description(f'Sending updated weights.')
 
@@ -649,9 +671,12 @@ class Manager:
                         msg = agent['pipe'].recv()
                         assert msg['type'] == 'test'
                         stats.append(msg['stat'])
+                    print('done testing')
 
                     self.log_scalar('env/test_reward', np.average([stat['cumulative_reward'] for stat in stats]),
                                     self.training_step)
+
+                    pbar.set_description('Rendering...')
 
                     self.agents[0]['pipe'].send(dict(
                         type='render'
@@ -672,56 +697,63 @@ if __name__ == '__main__':
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     config = dict(
         env_config=dict(
-            time_limit=1024
+            time_limit=256
         ),
         model_config=dict(
             optimizer=dict(
-                class_name='RMSprop',
+                class_name='RMSProp',
                 config=dict(
-                    learning_rate=3e-3
+                    learning_rate=0.000001
                 )
             ),
-            rbvf_centroids=4,
+            rbvf_centroids=128,
             loss='MeanSquaredError',
             dense_layers=[
-                dict(size=256, activation='relu'),
-                dict(size=256, activation='relu'),
+                dict(size=512, activation='relu', dropout=0.4),
+                dict(size=512, activation='relu', dropout=0.4),
+                dict(size=512, activation='relu', dropout=0.4)
             ],
-            beta=0.5,
+            beta=2.0,
         ),
         rl_config=dict(
-            # exploration=dict(
-            #     type='NoiseDecay',
-            #     config=dict(
-            #         noise_start=0.5,
-            #         noise_end=0.1,
-            #         noise_decay=40_000
-            #     )
-            exploration=dict(
-                type='OUActionNoise',
+            epsilon=dict(
+                type='DecayEpsilon',
                 config=dict(
-                    theta=0.15,
-                    mean=0,
-                    std_deviation=0.2,
-                    dt=0.01,
-                    target_scale=0.01,
-                    anneal=200_000
+                    epsilon_start=1.0,
+                    epsilon_end=0.0,
+                    epsilon_decay=10_000
                 )
             ),
-            tau=0.002,
+            # noise=dict(
+            #     type='OUActionNoise',
+            #     config=dict(
+            #         theta=0.15,
+            #         mean=0,
+            #         std_deviation=0.3,
+            #         dt=0.01,
+            #         target_scale=0.01,
+            #         anneal=200_000
+            #     )
+            # ),
+            noise=dict(
+                type='ZeroNoise',
+                config=dict()
+            ),
+            reward_clip=20,
+            tau=0.005,
             gamma=0.99,
             batch_size=256,
             buffer_size=500_000,
             num_episodes=10000
         ),
         training_config=dict(
-            num_agents=4,
-            num_training_per_epoch=16,
+            num_agents=1,
+            num_training_per_epoch=1024,
             run_id=run_id,
             agent_gpu_memory=512,
             trainer_gpu_memory=512,
             logdir=f'logs/{run_id}',
-            checkpoint_interval=20,
+            checkpoint_interval=1,
             # resume_from=dict(
             #     run_id='20230214-154600',
             #     step=2248

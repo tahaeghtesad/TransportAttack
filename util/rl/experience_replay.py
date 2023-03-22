@@ -1,52 +1,43 @@
 import random
 from collections import deque
 
-import tensorflow as tf
+import numpy as np
 
 
 class ExperienceReplay:
     def __init__(self, buffer_size, batch_size):
         self.buffer_size = buffer_size
         self.batch_size = batch_size
-        self.buffer = deque(maxlen=buffer_size)
 
-    def add(self, obs, action, reward, next_obs, next_action, done):
-        self.buffer.append(
-            dict(
-                state=obs,
-                action=action,
-                reward=reward,
-                next_state=next_obs,
-                next_action=next_action,
-                done=done
-            )
-        )
+        self.states = deque(maxlen=buffer_size)
+        self.actions = deque(maxlen=buffer_size)
+        self.rewards = deque(maxlen=buffer_size)
+        self.next_states = deque(maxlen=buffer_size)
+        self.dones = deque(maxlen=buffer_size)
+        self.next_actions = deque(maxlen=buffer_size)
+
+    def add(self, state, action, reward, next_state, done, next_action):
+        self.states.append(state)
+        self.actions.append(action)
+        self.rewards.append(reward)
+        self.next_states.append(next_state)
+        self.dones.append(done)
+        self.next_actions.append(next_action)
 
     def batch_add(self, experiences):
-        self.buffer.extend(experiences)
+        for e in experiences:
+            self.add(**e)
 
     def size(self):
-        return len(self.buffer)
+        return len(self.states)
 
     def sample(self):
-        ret = dict(
-            states=[],
-            actions=[],
-            rewards=[],
-            next_states=[],
-            dones=[],
-            next_actions=[]
+        indices = random.choices(range(self.size()), k=self.batch_size)
+        return (
+            np.array([self.states[i] for i in indices], dtype=np.float32),
+            np.array([self.actions[i] for i in indices], dtype=np.float32),
+            np.array([self.next_states[i] for i in indices], dtype=np.float32),
+            np.array([self.rewards[i] for i in indices], dtype=np.float32),
+            np.array([self.dones[i] for i in indices], dtype=np.float32),
+            np.array([self.next_actions[i] for i in indices], dtype=np.float32),
         )
-
-        experiences = random.choices(self.buffer, k=self.batch_size)
-
-        for e in experiences:
-            ret['states'].append(e['state'])
-            ret['actions'].append(e['action'])
-            ret['rewards'].append([e['reward']])
-            ret['next_states'].append(e['next_state'])
-            ret['dones'].append([e['done']])
-            if 'next_action' in e:
-                ret['next_actions'].append(e['next_action'])
-
-        return {k: tf.convert_to_tensor(v, dtype=tf.float32) for k, v in ret.items()}

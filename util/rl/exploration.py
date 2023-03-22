@@ -4,7 +4,6 @@ import random
 
 import numpy as np
 
-
 class DecayEpsilon:
     def __init__(self, epsilon_start, epsilon_end, epsilon_decay):
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -54,6 +53,17 @@ class NoiseDecay:
     def get_current_noise(self):
         return self.noise_end + (self.noise_start - self.noise_end) * math.exp(
             -1. * self.step / self.noise_decay)
+
+
+class ZeroNoise:
+    def __init__(self, shape):
+        self.shape = shape
+
+    def __call__(self):
+        return np.zeros(self.shape)
+
+    def get_current_noise(self):
+        return 0.0
 
 
 class OUActionNoise:
