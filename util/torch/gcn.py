@@ -9,6 +9,10 @@ class GraphConvolutionLayer(torch.nn.Module):
         self.bias = torch.nn.parameter.Parameter(torch.zeros(size=(out_features,)))
         self.beta = torch.nn.parameter.Parameter(torch.zeros(size=(adj.shape[0], )))
 
+        torch.nn.init.xavier_uniform_(self.kernel)
+        torch.nn.init.zeros_(self.bias)
+        torch.nn.init.zeros_(self.beta)
+
     def forward(self, x):
         diag = torch.diag(torch.reciprocal(torch.sum(self.adjacency_matrix, dim=1) + self.beta))
         adj = self.adjacency_matrix + torch.diag(self.beta)

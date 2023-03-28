@@ -76,9 +76,10 @@ class OUActionNoise:
         self.shape = shape
         self.x_prev = None
         self.target_scale = target_scale
-        self.scale = 0
         self.anneal = anneal
         self.step_count = 0
+        self.scale = self.target_scale + (1.0 - self.target_scale) * math.exp(
+            -1. * self.step_count / self.anneal)
         self.reset()
 
     def __call__(self):

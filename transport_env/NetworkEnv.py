@@ -2,18 +2,17 @@ import logging
 import math
 from typing import Optional, Union, Tuple, List, Dict
 
-import gymnasium as gym
+import gym
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-from gymnasium.core import ObsType, RenderFrame
 
 import util.tntp
 from transport_env.model import Trip
 from util.visualize import Timer
 
 
-class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
+class TransportationNetworkEnvironment(gym.Env):
 
     # Config contents:
     # - "city": the network file to load.
@@ -49,7 +48,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
         if self.render_mode is not None:
             self.pos = nx.kamada_kawai_layout(self.base)  # positions for all nodes
 
-        self.action_space = gym.spaces.Box(-np.inf, np.inf, (self.base.number_of_edges(),))
+        self.action_space = gym.spaces.Box(0, 1, (self.base.number_of_edges(),))
 
         if self.config['observation_type'] == 'vector':
             self.observation_space = gym.spaces.Box(0, np.inf, (self.base.number_of_edges(), 5,))
@@ -63,17 +62,14 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
 
     def reset(
             self,
-            *,
-            seed: Optional[int] = None,
-            options: Optional[dict] = None,
-    ) -> Tuple[ObsType, dict]:
-        super().reset(seed=seed, options=options)
+    ):
 
         if self.config['trips']['type'] == 'demand_file':
+            loaded_trips = Trip.trips_using_demand_file(self.config['trips']['demand_file'])
             if self.config['trips']['strategy'] == 'random':
-                self.trips: List[Trip] = np.random.choice(self.config['trips']['trips'], size=self.config['trips']['count'])
+                self.trips: List[Trip] = np.random.choice(loaded_trips, size=self.config['trips']['count'])
             elif self.config['trips']['strategy'] == 'top':
-                self.trips: List[Trip] = self.config['trips']['trips'][:self.config['trips']['count']]
+                self.trips: List[Trip] = loaded_trips[:self.config['trips']['count']]
             else:
                 raise Exception(f'Unknown trip strategy: {self.config["trips"]["strategy"]}')
         else:
@@ -94,9 +90,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
         elif self.config['observation_type'] == 'graph':
             return self.__get_current_observation_graph()
 
-    def step(self, action) -> Union[
-        Tuple[ObsType, float, bool, bool, dict], Tuple[ObsType, float, bool, bool, dict]
-    ]:
+    def step(self, action):
         if not self.initialized:
             raise Exception('Call env.reset() to initialize the network and trips before env.step().')
         if self.finished:
@@ -180,6 +174,8 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
             obs = self.__get_current_observation_edge_vector()
         elif self.config['observation_type'] == 'graph':
             obs = self.__get_current_observation_graph()
+        else:
+            raise Exception(f'Unknown observation type: {self.config["observation_type"]}')
 
         if self.config['rewarding_rule'] == 'vehicle_count':
             reward = self.__get_reward()
@@ -192,7 +188,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
 
         self.finished_previous_step = currently_finished
 
-        return obs, reward, done, False, info  # False is truncated.
+        return obs, reward, done, info  # False is truncated.
 
     def __get_reward(self):
         return (sum(self.__get_on_vertex_vehicles().values()) + sum(self.__get_on_edge_vehicles().values())) * self.config['reward_multiplier']
@@ -215,7 +211,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
               The text can include newlines and ANSI escape sequences (e.g. for colors).
     """
 
-    def render(self, mode='human') -> Optional[Union[RenderFrame, List[RenderFrame]]]:
+    def render(self, mode='human'):
 
         if self.render_mode is None:
             return
@@ -340,7 +336,7 @@ class TransportationNetworkEnvironment(gym.Env[np.ndarray, np.ndarray]):
 
         return math.ceil(free_flow_time * (1.0 + 0.15 * (on_edge * self.config['congestion'] / capacity) ** 4))
 
-    def __get_current_observation_graph(self) -> Tuple[gym.spaces.GraphInstance, gym.spaces.GraphInstance]:
+    def __get_current_observation_graph(self):
         # I am going to do something that is not intuitive at all. I return two graphs:
         # (NetworkGraph) one is the original base graph.
         # (DecisionGraph) The second is a graph with:
