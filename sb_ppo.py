@@ -4,6 +4,7 @@ from typing import Optional
 import gym
 import stable_baselines3 as sb
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback, BaseCallback
+from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
@@ -82,9 +83,18 @@ if __name__ == '__main__':
     env = gym.wrappers.TimeLimit(TransportationNetworkEnvironment(config['env_config']),
                                  max_episode_steps=config['env_config']['horizon'])
 
+    vec_env = SubprocVecEnv(
+        [(lambda: Monitor(
+            gym.wrappers.TimeLimit(
+                TransportationNetworkEnvironment(config['env_config']),
+                max_episode_steps=config['env_config']['horizon'])))
+         for _ in range(16)
+         ]
+    )
+
     model = sb.PPO(
         'MlpPolicy',
-        env,
+        vec_env,
         policy_kwargs=dict(
             features_extractor_class=CustomGraphConvolution,
             features_extractor_kwargs=dict(
