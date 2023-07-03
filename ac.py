@@ -70,7 +70,7 @@ class CustomActorCritic:
             q_values = critic([next_states, actor(next_states)])
             current_val = critic([states, actions], training=True)
             target_val = rewards + self.rl_config['gamma'] * q_values * (1 - dones)
-            loss = critic.loss(target_val, current_val)
+            loss = critic.criterion(target_val, current_val)
 
         grads = tape.gradient(loss, critic.trainable_variables)
         critic.optimizer.apply_gradients(zip(grads, critic.trainable_variables))

@@ -1,7 +1,7 @@
 import logging
 from typing import List
 
-import gymnasium as gym
+import gym
 import networkx as nx
 
 import numpy as np
@@ -18,8 +18,8 @@ def get_path_travel_time(path: List[int], weight):
 
 def estimate_delay_for_action(
         action,
-        network_graph: gym.spaces.GraphInstance,
-        decision_graph: gym.spaces.GraphInstance
+        network_graph,
+        decision_graph
 ):
     reconstructed_graph: nx.DiGraph = nx.from_edgelist(
         network_graph.edge_links,
@@ -80,9 +80,9 @@ class PostProcessHeuristic:
         self.name = self.heuristic.name
 
     def predict(self, obs):
-        self.logger.log(1, f'Step {self.heuristic.step} - Obs: {obs}')
+        # self.logger.log(2, f'Step {self.heuristic.step} - Obs: {obs}')
         action = self.heuristic.predict(obs)
-        self.logger.log(1, f'Step {self.heuristic.step} - Action: {action}')
+        # self.logger.log(2, f'Step {self.heuristic.step} - Action: {action}')
         return action
 
 
@@ -183,8 +183,8 @@ class GreedyRider(BaseHeuristic):
 
     def predict(self, obs):
         super().predict(obs)
-        network_graph: gym.spaces.GraphInstance = obs[0]
-        decision_graph: gym.spaces.GraphInstance = obs[1]
+        network_graph = obs[0]
+        decision_graph = obs[1]
 
         action = np.zeros(self.action_shape)
 
@@ -254,7 +254,7 @@ class GreedyRiderVector(BaseHeuristic):
         super().predict(obs)
 
         with Timer('GreedyRiderVector.predict.singular'):
-            norm = np.linalg.norm(obs[:, 0], self.norm)
+            norm = np.linalg.norm(obs[:, 0], self.norm) + 1e-7
             normalized_action = self.epsilon * np.divide(obs[:, 0], norm, where=norm != 0)
 
             return normalized_action

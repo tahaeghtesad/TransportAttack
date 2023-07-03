@@ -132,7 +132,7 @@ if __name__ == '__main__':
         # qs = np.expand_dims(qs, axis=1)
         actions = np.zeros((len(states), env.action_space.sample().shape[0], 1))
 
-        pre_loss = model.loss(qs, model(states))
+        pre_loss = model.criterion(qs, model(states))
         # pre_r2 = r2_score(qs, model(states), multioutput='variance_weighted')
         pre_r2 = r2(qs, model(states))
 
@@ -166,7 +166,7 @@ if __name__ == '__main__':
             f'lr: {model.optimizer._decayed_lr(tf.float32):.3e} |'
             f' pre_loss: {pre_loss:.4f} |'
             f' loss: {model.evaluate(states, qs, verbose=0):.4f} |'
-            f' loss_from_state = {model.loss(qs, reward_from_state):.4f} |'
+            f' loss_from_state = {model.criterion(qs, reward_from_state):.4f} |'
             f' pre_r2 = {pre_r2:.6f} | '
             # f' gradient_magnitude = {gradient_magnitude:.2f} |'
             # f' change(mean, sigma2) = ({(model.trainable_variables[0].numpy() - previous_variables).mean():.8f}, {(model.trainable_variables[0].numpy() - previous_variables).var():.8f}) |'

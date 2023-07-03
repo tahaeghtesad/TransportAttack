@@ -14,15 +14,13 @@ class ExperienceReplay:
         self.rewards = deque(maxlen=buffer_size)
         self.next_states = deque(maxlen=buffer_size)
         self.dones = deque(maxlen=buffer_size)
-        self.next_actions = deque(maxlen=buffer_size)
 
-    def add(self, state, action, reward, next_state, done, next_action):
+    def add(self, state, action, reward, next_state, done):
         self.states.append(state)
         self.actions.append(action)
         self.rewards.append(reward)
         self.next_states.append(next_state)
         self.dones.append(done)
-        self.next_actions.append(next_action)
 
     def batch_add(self, experiences):
         for e in experiences:
@@ -33,11 +31,11 @@ class ExperienceReplay:
 
     def sample(self):
         indices = random.choices(range(self.size()), k=self.batch_size)
+
         return (
-            np.array([self.states[i] for i in indices], dtype=np.float32),
-            np.array([self.actions[i] for i in indices], dtype=np.float32),
-            np.array([self.next_states[i] for i in indices], dtype=np.float32),
-            np.array([self.rewards[i] for i in indices], dtype=np.float32),
-            np.array([self.dones[i] for i in indices], dtype=np.float32),
-            np.array([self.next_actions[i] for i in indices], dtype=np.float32),
+            [self.states[i] for i in indices],
+            [self.actions[i] for i in indices],
+            [self.next_states[i] for i in indices],
+            [self.rewards[i] for i in indices],
+            [self.dones[i] for i in indices],
         )

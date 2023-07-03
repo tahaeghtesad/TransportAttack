@@ -3,6 +3,7 @@ import sys
 import os
 import traceback
 import argparse
+import random
 from datetime import datetime
 from multiprocessing import Process, Pipe
 
@@ -104,7 +105,7 @@ class DDPGModel:
         y = rewards + (1 - dones) * self.config['rl_config']['gamma'] * \
             self.target_q_model([next_states, self.target_policy(next_states, training=True)], training=True)
         critic_value = self.q_model([states, actions], training=True)
-        critic_loss = self.q_model.loss(y, critic_value)
+        critic_loss = self.q_model.criterion(y, critic_value)
         critic_grads = tf.gradients(critic_loss, self.q_model.trainable_variables)
         self.q_model.optimizer.apply_gradients(zip(critic_grads, self.q_model.trainable_variables))
 
@@ -169,6 +170,10 @@ class Agent(Process):
         tf.config.set_logical_device_configuration(
             gpus[assigned_gpu],
             [tf.config.LogicalDeviceConfiguration(memory_limit=self.config['training_config']['agent_gpu_memory'])])
+
+        np.random.seed(self.index)
+        tf.random.set_seed(self.index)
+        random.seed(self.index)
 
         self.logger.info(f'Initializing environment.')
         self.env = TransportationNetworkEnvironment(self.config['env_config'])
@@ -689,7 +694,7 @@ def run(run_id, epsilon=30, norm=2, congestion=True):
                 dict(size=64, activation='elu'),
                 dict(size=64, activation='elu'),
                 dict(size=64, activation='elu'),
-                dict(size=4, activation='elu'),
+                dict(size=16, activation='elu'),
             ],
             dense_layers=[
                 dict(size=128, activation='elu'),
@@ -711,22 +716,22 @@ def run(run_id, epsilon=30, norm=2, congestion=True):
                 config=dict(
                     noise_start=5.0,
                     noise_end=0.1,
-                    noise_decay=1_000_000
+                    noise_decay=500_000
                 )
             ),
-            tau=0.002,
+            tau=0.0002,
             gamma=0.97,
-            batch_size=256,
-            buffer_size=5_000_000,
+            batch_size=128,
+            buffer_size=100_000,
             num_episodes=10000,
             reward_scale=1.0
         ),
         training_config=dict(
             num_agents=3,
-            num_training_per_epoch=16,
+            num_training_per_epoch=128,
             run_id=run_id,
-            agent_gpu_memory=512,
-            trainer_gpu_memory=512,
+            agent_gpu_memory=128,
+            trainer_gpu_memory=128,
             logdir=f'logs/{run_id}',
             checkpoint_interval=20,
             agent_batch_size=256,

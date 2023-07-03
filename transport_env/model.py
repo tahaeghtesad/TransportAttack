@@ -15,7 +15,7 @@ class Trip:
     edge_time: int
 
     @staticmethod
-    def trip_creator(count):
+    def random_trip_creator(count):
         def create_random_trips_starting_at_t_equals_zero(network: nx.Graph):
             trips = []
             i = 0
@@ -32,8 +32,8 @@ class Trip:
                     continue
 
                 trips.append((start, end, 0))
-                return Trip.get_trips(trips)
-            return trips
+                i += 1
+            return Trip.get_trips(trips)
         return create_random_trips_starting_at_t_equals_zero
 
     @staticmethod

@@ -83,7 +83,7 @@ class CAQLModel:
         y = rewards + (1 - dones) * self.config['rl_config']['gamma'] * \
             self.target_q_model([next_states, self.target_policy(next_states, training=True)], training=True)
         critic_value = self.q_model([states, actions], training=True)
-        critic_loss = self.q_model.loss(y, critic_value)
+        critic_loss = self.q_model.criterion(y, critic_value)
         critic_grads = tf.gradients(critic_loss, self.q_model.trainable_variables)
         self.q_model.optimizer.apply_gradients(zip(critic_grads, self.q_model.trainable_variables))
 

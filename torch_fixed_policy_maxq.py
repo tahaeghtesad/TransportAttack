@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 
 import gym
+import numpy as np
 import torch
 from torch.utils import tensorboard as tb
 from tqdm import tqdm
@@ -11,7 +12,7 @@ import util.rl.exploration
 from attack_heuristics import GreedyRiderVector, Random
 from transport_env.NetworkEnv import TransportationNetworkEnvironment
 from util.rl.experience_replay import ExperienceReplay
-from util.torch.gcn import GraphConvolutionResidualBlock
+from util.torch.gcn import GraphConvolutionLayer
 from util.torch.math import r2_score
 from util.torch.misc import allocate_best_device
 
@@ -23,22 +24,24 @@ class DQNModel(torch.nn.Module):
         state_shape = env.observation_space.sample().shape  # (76, 5)
         adj = env.get_adjacency_matrix()
 
+        feature_count = state_shape[1] + 1
         edge_count = state_shape[0]
 
-        if len(config['model_config']['conv_layers']) > 0:
-            self.gcn_layers = torch.nn.ModuleList([
-                GraphConvolutionResidualBlock(
-                    state_shape[1] + 1,
-                    adj,
-                    config['model_config']['conv_layers'][i]['activation'],
-                    config['model_config']['conv_layers'][i]['depth']
-                )
-                for i in range(len(config['model_config']['conv_layers']))
-            ])
+        self.norm = config['env_config']['norm']
+        self.epsilon = config['env_config']['epsilon']
+
+        self.gcn_layers = torch.nn.ModuleList([
+            GraphConvolutionLayer(config['model_config']['conv_layers'][i-1]['size'] if i != 0 else feature_count, config['model_config']['conv_layers'][i]['size'], adj)
+            for i in range(len(config['model_config']['conv_layers']))
+        ])
+        self.gcn_layers_activation = [
+            getattr(torch.nn.functional, config['model_config']['conv_layers'][i]['activation'])
+            for i in range(len(config['model_config']['conv_layers']))
+        ]
 
         self.dense_layers = torch.nn.ModuleList([
             torch.nn.Linear(
-                config['model_config']['dense_layers'][i - 1]['size'] if i != 0 else edge_count * (state_shape[1] + 1 if hasattr(self, 'gcn_layers') else 6),
+                config['model_config']['dense_layers'][i - 1]['size'] if i != 0 else edge_count * config['model_config']['conv_layers'][-1]['size'],
                 config['model_config']['dense_layers'][i]['size']
             )
             for i in range(len(config['model_config']['dense_layers']))
@@ -53,22 +56,27 @@ class DQNModel(torch.nn.Module):
             1
         )
 
+        for l in self.gcn_layers:
+            torch.nn.init.xavier_uniform_(l.kernel)
+            torch.nn.init.zeros_(l.bias)
+            torch.nn.init.zeros_(l.beta)
+
         for l in self.dense_layers:
             torch.nn.init.xavier_uniform_(l.weight)
             torch.nn.init.zeros_(l.bias)
 
     def forward(self, states, actions):
+        actions = self.epsilon * torch.nn.functional.normalize(actions, dim=1, p=self.norm)
         x = torch.cat([states, torch.unsqueeze(actions, 2)], dim=2)
-        if hasattr(self, 'gcn_layers'):
-            for l in self.gcn_layers:
-                x = l(x)
-
+        for a, l in zip(self.gcn_layers_activation, self.gcn_layers):
+            x = l(x)
+            x = a(x)
         x = x.flatten(start_dim=1)
         for a, l in zip(self.dense_layers_activation, self.dense_layers):
             x = l(x)
             x = a(x)
 
-        x = torch.nn.functional.relu(self.output_layer(x))
+        x = self.output_layer(x)
         return x
 
 
@@ -78,6 +86,11 @@ class DoubleDQNModel(torch.nn.Module):
 
         self.q_model = DQNModel(env, config)
         self.target_model = DQNModel(env, config)
+
+        self.norm = config['env_config']['norm']
+        self.epsilon = config['env_config']['epsilon']
+        self.action_gradient_step_count = config['model_config']['action_gradient_step_count']
+        self.action_optimizer = config['model_config']['action_optimizer']
 
         for target_param, param in zip(self.target_model.parameters(), self.q_model.parameters()):
             target_param.data.copy_(param.data)
@@ -92,6 +105,26 @@ class DoubleDQNModel(torch.nn.Module):
 
     def forward(self, states, actions):
         return self.target_model.forward(states, actions)
+
+    def max_q(self, states):
+        stock_action = torch.distributions.normal.Normal(0, 1).sample(torch.Size((states.shape[0], 76))).to(self.device)
+        stock_action.data = self.epsilon * torch.nn.functional.normalize(stock_action, dim=1, p=self.norm)
+        initial_q = self.q_model.forward(states, stock_action)
+        stock_action.requires_grad = True
+
+        action_optimizer = getattr(torch.optim, self.action_optimizer['class_name'])([stock_action],
+                                                                                     **self.action_optimizer['config'])
+
+        for i in range(self.action_gradient_step_count):
+            action_optimizer.zero_grad()
+            current_q = -self.q_model.forward(states, stock_action)
+            current_q.backward()
+            action_optimizer.step()
+            stock_action.data = self.epsilon * torch.nn.functional.normalize(
+                stock_action, dim=1, p=self.norm)
+
+        last_q = self.q_model.forward(states, stock_action)
+        return stock_action.cpu().data.numpy(), last_q.mean().cpu().data.numpy(), (last_q - initial_q).mean().cpu().data.numpy()
 
     def update_target_model(self):
         for target_param, param in zip(self.target_model.parameters(), self.q_model.parameters()):
@@ -132,7 +165,6 @@ if __name__ == '__main__':
     writer = tb.SummaryWriter(f'logs/{run_id}')
     os.makedirs(f'logs/{run_id}/weights')
 
-
     config = dict(
         env_config=dict(
             city='SiouxFalls',
@@ -150,27 +182,37 @@ if __name__ == '__main__':
                 strategy='random',
                 count=10
             ),
-            rewarding_rule='travel_time_increased',
-            observation_type='vector',
-            norm_penalty_coeff=0.00,
+            rewarding_rule='vehicle_count',
+            observation_type='vector'
         ),
         model_config=dict(
             q_optimizer=dict(
                 class_name='Adam',
                 config=dict(
-                    lr=2.5e-5
+                    lr=1e-5
                 )
             ),
             loss='MSELoss',
             conv_layers=[
-                dict(depth=3, activation='relu'),
-                dict(depth=3, activation='relu'),
+                dict(size=64, activation='relu'),
+                dict(size=64, activation='relu'),
+                dict(size=64, activation='relu'),
+                dict(size=64, activation='relu'),
+                dict(size=64, activation='relu'),
+                dict(size=16, activation='relu'),
             ],
             dense_layers=[
-                dict(size=512, activation='relu'),
-                dict(size=512, activation='relu'),
+                dict(size=64, activation='relu'),
+                dict(size=64, activation='relu'),
             ],
             tau=0.002,
+            action_gradient_step_count=100,
+            action_optimizer=dict(
+                class_name='Adam',
+                config=dict(
+                    lr=0.1
+                )
+            )
         ),
         rl_config=dict(
             noise=dict(
@@ -178,16 +220,22 @@ if __name__ == '__main__':
                 config=dict(
                     theta=0.15,
                     mean=0,
-                    std_deviation=0.05,
+                    std_deviation=0.2,
                     dt=0.01,
                     target_scale=1.0,
                     anneal=70_000
                 )
             ),
             epsilon=dict(
+                # type='DecayEpsilon',
+                # config=dict(
+                #     epsilon_start=1.0,
+                #     epsilon_end=0.2,
+                #     epsilon_decay=70_000
+                # )
                 type='ConstantEpsilon',
                 config=dict(
-                    epsilon=0.8
+                    epsilon=0.95
                 )
             ),
             gamma=0.97,
@@ -198,8 +246,11 @@ if __name__ == '__main__':
         training_config=dict(
             num_training_per_epoch=256,
             num_episodes=1_000_000,
+            # num_training_per_epoch=1,
+            # num_episodes=16,
         ),
     )
+
     with open(f'logs/{run_id}/config.json', 'w') as fd:
         json.dump(config, fd, indent=4)
 
@@ -242,7 +293,6 @@ if __name__ == '__main__':
         rewards = 0
         step = 0
         discounted_reward = 0
-        norm_penalty = 0
         while not done and not truncated:
             if epsilon():
                 action = random.predict(state)
@@ -253,7 +303,6 @@ if __name__ == '__main__':
             next_state, reward, done, info = env.step(action)
             truncated = info.get("TimeLimit.truncated", False)
             buffer.add(state, action, reward, next_state, done, next_action=greedy.predict(next_state))
-            norm_penalty += info.get('norm_penalty')
             state = next_state
             rewards += reward
             discounted_reward += reward * (config['rl_config']['gamma'] ** step)
@@ -263,7 +312,6 @@ if __name__ == '__main__':
         writer.add_scalar('env/cumulative_reward', rewards, global_step)
         writer.add_scalar('env/discounted_reward', discounted_reward, global_step)
         writer.add_scalar('env/episode_length', step, global_step)
-        writer.add_scalar('env/norm_penalty', norm_penalty / step, global_step)
 
         for _ in range(config['training_config']['num_training_per_epoch']):
             if buffer.size() >= config['rl_config']['batch_size']:
@@ -303,3 +351,26 @@ if __name__ == '__main__':
 
             if global_step % 1000 == 0:
                 torch.save(model.state_dict(), f'logs/{run_id}/weights/model_{global_step}.pt')
+
+        if episode % 10 == 0:
+            truncated = False
+            done = False
+            step = 0
+            rewards = 0
+            discounted_reward = 0
+            state = env.reset()
+
+            while not done and not truncated:
+                action, q_value, improvement = model.max_q(torch.unsqueeze(torch.tensor(state, dtype=torch.float32), 0).to(device))
+                pbar.set_description(f'Testing {step}, norm: {np.linalg.norm(action[0], ord=config["env_config"]["norm"]):.2f}, improvement: {improvement:.6f}, q_value: {q_value:.6f}')
+                next_state, reward, done, info = env.step(action[0])
+                truncated = info.get("TimeLimit.truncated", False)
+                state = next_state
+                rewards += reward
+                discounted_reward += reward * (config['rl_config']['gamma'] ** step)
+                step += 1
+
+            writer.add_scalar('test/cumulative_reward', rewards, global_step)
+            writer.add_scalar('test/discounted_reward', discounted_reward, global_step)
+            writer.add_scalar('test/episode_length', step, global_step)
+

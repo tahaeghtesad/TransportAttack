@@ -4,7 +4,7 @@ import copy
 
 import matplotlib.pyplot as plt
 import numpy as np
-import gymnasium as gym
+import gym
 
 import attack_heuristics
 from attack_heuristics import PostProcessHeuristic
@@ -22,8 +22,8 @@ if __name__ == '__main__':
     config = dict(
         city='SiouxFalls',
         horizon=50,
-        epsilon=5,
-        norm=1,
+        epsilon=30,
+        norm=2,
         frac=0.5,
         num_sample=50,
         render_mode=None,
@@ -35,7 +35,7 @@ if __name__ == '__main__':
             strategy='random',
             count=5
         ),
-        rewarding_rule='vehicle_count',
+        rewarding_rule='travel_time_increased',
         repeat=100,
         observation_type='vector',
     )
@@ -116,9 +116,10 @@ if __name__ == '__main__':
             while not d and not t:
                 a = strategy.predict(o)
                 if s_num > len(strategies) - 1:
-                    o, r, d, t, i = env_graph.step(a)
+                    o, r, d, i = env_graph.step(a)
                 else:
-                    o, r, d, t, i = env.step(a)
+                    o, r, d, i = env.step(a)
+                t = i.get('TimeLimit.truncated', False)
                 cumulative_reward += r
                 discounted_reward += gamma ** env.time_step * r
                 logger.debug(f'Reward: {r:.2f} - Done {d}')

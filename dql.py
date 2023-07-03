@@ -69,7 +69,7 @@ class CustomDQL:
         with tf.GradientTape() as tape:
             current_val = self.model([states, actions], training=True)
             target_val = rewards + self.rl_config['gamma'] * q_values * (1 - dones)
-            loss = self.model.loss(target_val, current_val)
+            loss = self.model.criterion(target_val, current_val)
 
         grads = tape.gradient(loss, self.model.trainable_variables)
         self.model.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))

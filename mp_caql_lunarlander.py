@@ -99,13 +99,13 @@ class CAQLModel:
         # Update Critic
         y = rewards + (1 - dones) * self.config['rl_config']['gamma'] * max_q_values
         critic_value = self.q_model([states, actions], training=True)
-        critic_loss = self.q_model.loss(y, critic_value)
+        critic_loss = self.q_model.criterion(y, critic_value)
         critic_grads = tf.gradients(critic_loss, self.q_model.trainable_variables)
         self.q_model.optimizer.apply_gradients(zip(critic_grads, self.q_model.trainable_variables))
 
         # Update Actor
         current_actions = self.policy(next_states, training=True)
-        actor_loss = self.policy.loss(current_actions, max_q_actions)
+        actor_loss = self.policy.criterion(current_actions, max_q_actions)
         actor_grads = tf.gradients(actor_loss, self.policy.trainable_variables)
         self.policy.optimizer.apply_gradients(zip(actor_grads, self.policy.trainable_variables))
 
