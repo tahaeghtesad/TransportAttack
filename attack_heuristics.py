@@ -254,7 +254,10 @@ class GreedyRiderVector(BaseHeuristic):
         super().predict(obs)
 
         with Timer('GreedyRiderVector.predict.singular'):
-            norm = np.linalg.norm(obs[:, 0], self.norm) + 1e-7
+            norm = np.linalg.norm(obs[:, 0], ord=self.norm)
             normalized_action = self.epsilon * np.divide(obs[:, 0], norm, where=norm != 0)
 
             return normalized_action
+
+    def forward(self, obs):
+        return self.predict(obs), None, self.epsilon  # None is the budget

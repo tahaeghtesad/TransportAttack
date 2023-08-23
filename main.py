@@ -1,15 +1,14 @@
 import logging
 import sys
-import copy
 
+import gym
 import matplotlib.pyplot as plt
 import numpy as np
-import gym
+import util.graphing as graphing
 
 import attack_heuristics
 from attack_heuristics import PostProcessHeuristic
-from transport_env.NetworkEnv import TransportationNetworkEnvironment
-from transport_env.model import Trip
+from transport_env.DynamicMultiAgentNetworkEnv import DynamicMultiAgentTransportationNetworkEnvironment
 
 if __name__ == '__main__':
 
@@ -20,29 +19,30 @@ if __name__ == '__main__':
     logger = logging.getLogger(__name__)
 
     config = dict(
-        city='SiouxFalls',
-        horizon=50,
-        epsilon=30,
-        norm=2,
+        network=dict(
+            method='network_file',
+            city='SiouxFalls',
+        ),
+        trips=dict(
+            type='trips_file',
+            randomize_factor=0.1,
+        ),
+        horizon=20,
+        norm=1,
         frac=0.5,
         num_sample=50,
         render_mode=None,
-        reward_multiplier=1.0,
+        # reward_multiplier=0.00001,
+        reward_multiplier=1,
         congestion=True,
-        trips=dict(
-            type='demand_file',
-            trips=Trip.trips_using_demand_file('Sirui/traffic_data/sf_demand.txt'),
-            strategy='random',
-            count=5
-        ),
-        rewarding_rule='travel_time_increased',
-        repeat=100,
+        rewarding_rule='step_count',
+        repeat=50,
         observation_type='vector',
+        n_components=4,
+        epsilon=30,
     )
 
     logger.info(f'Config: {config}')
-
-    config.update(dict(trip_generator=Trip.using_demand_file(f'Sirui/traffic_data/sf_demand.txt', 'random', 100)))
 
     # logger.info(f'Observation Space: {env.observation_space}')
     # logger.info(f'Action Space: {env.action_space}')
@@ -59,138 +59,84 @@ if __name__ == '__main__':
         )
     ]
 
-    graph_strategies = [
-        PostProcessHeuristic(
-            attack_heuristics.MultiRandom((76,), config['num_sample'], 'continuous', config['frac'],
-                                          config['norm'], config['epsilon'])),
-        PostProcessHeuristic(
-            attack_heuristics.MultiRandom((76,), config['num_sample'], 'discrete', config['frac'],
-                                          config['norm'], config['epsilon'])),
-    ]
+    step_data = np.zeros((config['repeat'], len(strategies)))
+    cumulative_reward_data = np.zeros((config['repeat'], len(strategies)))
+    discounted_reward_data = np.zeros((config['repeat'], len(strategies)))
 
-    rewarding_rules = ['vehicle_count', 'step_count', 'vehicles_finished']
-    rewarding_rule_descriptions = [
-        'Number of Vehicles Currently in the Network',
-        '1 if there is at least one vehicle in the network, 0 otherwise',
-        'Number of Vehicles Finished Their Trips in this step'
-    ]
+    for r_factor in np.logspace(-3, 0, 10):
+        config['trips']['randomize_factor'] = r_factor
 
-    # for rewarding_rule, desc in zip(rewarding_rules, rewarding_rule_descriptions):
+        env = gym.wrappers.TimeLimit(DynamicMultiAgentTransportationNetworkEnvironment(config), config['horizon'])
 
-    rewarding_rule = 'vehicle_count'
-    config.update(dict(rewarding_rule=rewarding_rule))
+        gamma = 0.97
 
-    step_data = np.zeros((config['repeat'], len(strategies) + len(graph_strategies)))
-    cumulative_reward_data = np.zeros((config['repeat'], len(strategies) + len(graph_strategies)))
-    discounted_reward_data = np.zeros((config['repeat'], len(strategies) + len(graph_strategies)))
+        for s_num, strategy in enumerate(strategies):
+            logger.info(f'Running Strategy {strategy.name} for {config["repeat"]} trials...')
 
-    env = gym.wrappers.TimeLimit(TransportationNetworkEnvironment(copy.deepcopy(config)), config['horizon'])
-    print(env.observation_space)
-    config['observation_type'] = 'graph'
-    env_graph = gym.wrappers.TimeLimit(TransportationNetworkEnvironment(copy.deepcopy(config)), config['horizon'])
-    print(env_graph.observation_space)
+            discounted_rewards = []
+            cumulative_rewards = []
+            step_counts = []
 
-
-    gamma = 0.97
-
-    for s_num, strategy in enumerate(strategies + graph_strategies):
-        logger.info(f'Running Strategy {strategy.name} for {config["repeat"]} trials...')
-
-        discounted_rewards = []
-        cumulative_rewards = []
-        step_counts = []
-
-        for trial in range(config['repeat']):
-            if s_num > len(strategies) - 1:
-                o = env_graph.reset()
-            else:
+            for trial in range(config['repeat']):
                 o = env.reset()
 
-            cumulative_reward = 0
-            discounted_reward = 0
+                cumulative_reward = 0
+                discounted_reward = 0
 
-            d = False
-            t = False
-            step_count = 0
+                d = False
+                t = False
+                step_count = 0
 
-            while not d and not t:
-                a = strategy.predict(o)
-                if s_num > len(strategies) - 1:
-                    o, r, d, i = env_graph.step(a)
-                else:
+                while not d and not t:
+                    a = strategy.predict(o)
                     o, r, d, i = env.step(a)
-                t = i.get('TimeLimit.truncated', False)
-                cumulative_reward += r
-                discounted_reward += gamma ** env.time_step * r
-                logger.debug(f'Reward: {r:.2f} - Done {d}')
-                logger.debug(f'Observation:\n{o}')
-                step_count += 1
+                    t = i.get('TimeLimit.truncated', False)
+                    r = sum(r)
+                    cumulative_reward += r
+                    discounted_reward += gamma ** env.time_step * r
+                    step_count += 1
 
+                discounted_rewards.append(discounted_reward)
+                cumulative_rewards.append(cumulative_reward)
+                step_counts.append(step_count)
 
-            discounted_rewards.append(discounted_reward)
-            cumulative_rewards.append(cumulative_reward)
-            step_counts.append(step_count)
+                discounted_reward_data[trial, s_num] = discounted_reward
+                cumulative_reward_data[trial, s_num] = cumulative_reward
+                step_data[trial, s_num] = step_count
 
-            # data[trial, s_num] = cumulative_reward
-            discounted_reward_data[trial, s_num] = discounted_reward
-            cumulative_reward_data[trial, s_num] = cumulative_reward
-            step_data[trial, s_num] = step_count
+            # logger.info(f'Discounted Reward: '
+            #             f'\u03BC={np.mean(discounted_rewards):.2f},'
+            #             f'\u03C3\u00B2={np.var(discounted_rewards):.2f},'
+            #             f'min={np.min(discounted_rewards):.2f},'
+            #             f'q25={np.quantile(discounted_rewards, .25):.2f},'
+            #             f'q50={np.quantile(discounted_rewards, .50):.2f},'
+            #             f'q75={np.quantile(discounted_rewards, .75):.2f},'
+            #             f'max={np.max(discounted_rewards):.2f}')
+            # logger.info(f'Cumulative Reward: '
+            #             f'\u03BC={np.mean(cumulative_rewards):.2f},'
+            #             f'\u03C3\u00B2={np.var(cumulative_rewards):.2f},'
+            #             f'min={np.min(cumulative_rewards):.2f},'
+            #             f'q25={np.quantile(cumulative_rewards, .25):.2f},'
+            #             f'q50={np.quantile(cumulative_rewards, .50):.2f},'
+            #             f'q75={np.quantile(cumulative_rewards, .75):.2f},'
+            #             f'max={np.max(cumulative_rewards):.2f}')
+            # logger.info(f'Step Count: '
+            #             f'\u03BC={np.mean(step_counts):.2f},'
+            #             f'\u03C3\u00B2={np.var(step_counts):.2f},'
+            #             f'min={np.min(step_counts):.2f},'
+            #             f'q25={np.quantile(step_counts, .25):.2f},'
+            #             f'q50={np.quantile(step_counts, .50):.2f},'
+            #             f'q75={np.quantile(step_counts, .75):.2f},'
+            #             f'max={np.max(step_counts):.2f}')
 
-        logger.info(f'Discounted Reward: '
-                    f'\u03BC={np.mean(discounted_rewards):.2f},'
-                    f'\u03C3\u00B2={np.var(discounted_rewards):.2f},'
-                    f'min={np.min(discounted_rewards):.2f},'
-                    f'q25={np.quantile(discounted_rewards, .25):.2f},'
-                    f'q50={np.quantile(discounted_rewards, .50):.2f},'
-                    f'q75={np.quantile(discounted_rewards, .75):.2f},'
-                    f'max={np.max(discounted_rewards):.2f}')
-        logger.info(f'Cumulative Reward: '
-                    f'\u03BC={np.mean(cumulative_rewards):.2f},'
-                    f'\u03C3\u00B2={np.var(cumulative_rewards):.2f},'
-                    f'min={np.min(cumulative_rewards):.2f},'
-                    f'q25={np.quantile(cumulative_rewards, .25):.2f},'
-                    f'q50={np.quantile(cumulative_rewards, .50):.2f},'
-                    f'q75={np.quantile(cumulative_rewards, .75):.2f},'
-                    f'max={np.max(cumulative_rewards):.2f}')
-        logger.info(f'Step Count: '
-                    f'\u03BC={np.mean(step_counts):.2f},'
-                    f'\u03C3\u00B2={np.var(step_counts):.2f},'
-                    f'min={np.min(step_counts):.2f},'
-                    f'q25={np.quantile(step_counts, .25):.2f},'
-                    f'q50={np.quantile(step_counts, .50):.2f},'
-                    f'q75={np.quantile(step_counts, .75):.2f},'
-                    f'max={np.max(step_counts):.2f}')
-
-    # plt.boxplot(discounted_reward_data, labels=[s.name for s in strategies])
-    # plt.xticks(rotation=45)
-    # plt.ylabel(f'Average Discounted Reward, $\\gamma$={gamma:.3f}')
-    # plt.xlabel('Strategy')
-    # # plt.title(desc)
-    # plt.subplots_adjust(bottom=.4)
-    # plt.grid()
-    # # plt.savefig(f'disc_reward_{rewarding_rule}.png')
-    # plt.show()
-    # plt.clf()
-
-    plt.boxplot(cumulative_reward_data, labels=[s.name for s in strategies + graph_strategies])
-    plt.xticks(rotation=45)
-    plt.ylabel(f'Average Cumulative Reward')
-    plt.xlabel('Strategy')
-    plt.title(f'{config["norm"]}-norm/$\\epsilon$={config["epsilon"]}')
-    plt.subplots_adjust(bottom=.4)
-    plt.grid()
-    plt.savefig(f'cumulative_reward_{config["norm"]}-norm_{config["epsilon"]}.png')
-    # plt.savefig(f'cumulative_reward_{rewarding_rule}.png')
-    # plt.show()
-    plt.clf()
-
-    plt.boxplot(step_data, labels=[s.name for s in strategies + graph_strategies])
-    plt.xticks(rotation=45)
-    plt.ylabel(f'Average Step')
-    plt.xlabel('Strategy')
-    plt.title(f'{config["norm"]}-norm/$\\epsilon$={config["epsilon"]}')
-    plt.subplots_adjust(bottom=.4)
-    plt.grid()
-    plt.savefig(f'step_count_{config["norm"]}-norm_{config["epsilon"]}.png')
-    # plt.show()
-    plt.clf()
+        graphing.create_grouped_box_plot(
+            data_1=discounted_reward_data,
+            data_2=cumulative_reward_data,
+            title=f'Strategy Reward with fixed $B={config["epsilon"]}$, $F={r_factor:.3f}$',
+            x_label='Attack Strategies',
+            x_ticks=['NoAttack', 'Continuous', 'Discrete', 'Greedy'],
+            y_label_1=f'Average Discounted Reward, $\\gamma$={gamma:.2f}',
+            y_label_2=f'Average Cumulative Reward',
+            save_path=f'./results/real_world_data_with_randomized_factor_{r_factor:.3f}.png',
+            show=True,
+        )

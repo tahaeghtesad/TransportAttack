@@ -11,7 +11,7 @@ def import_od(matfile):
     for k in range(len(blocks)):
         orig = blocks[k].split('\n')
         dests = orig[1:]
-        orig=int(orig[0])
+        orig = int(orig[0])
 
         d = [eval('{'+a.replace(';',',').replace(' ','') +'}') for a in dests]
         destinations = {}
@@ -23,7 +23,7 @@ def import_od(matfile):
     for orig in matrix:
         for dest in matrix[orig]:
             if matrix[orig][dest] > 0:
-                od_data.append([orig, dest, matrix[orig][dest]])
+                od_data.append([orig, dest, int(matrix[orig][dest])])
 
     return od_data
 

@@ -12,7 +12,7 @@ from transport_env.model import Trip
 from util import tntp
 
 
-class BaseTransportationNetworkEnv(gym.Env, ABC):
+class DynamicBaseTransportationNetworkEnv(gym.Env, ABC):
     def __init__(self, config):
         super().__init__()
 
@@ -34,17 +34,32 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
             self.logger.info(f'City {city} has {self.base.number_of_nodes()} nodes and {self.base.number_of_edges()} edges.')
 
         elif config['network']['method'] == 'generate':
-            self.base = BaseTransportationNetworkEnv.gen_network(**config['network'])
+            self.base = DynamicBaseTransportationNetworkEnv.gen_network(**config['network'])
         else:
             raise Exception(f'Unknown network method: {config["network"]["method"]}'
                             f', available methods: network_file, generate')
 
-        self.trips: List[Trip] = []
+        if self.config['trips']['type'] == 'trips_file':
+            city = self.config['network']['city']
+            loaded_trips = Trip.trips_using_od_file(f'./TransportationNetworks/{city}/{city}_trips.tntp')
+            self.trips: List[Trip] = loaded_trips
+        elif self.config['trips']['type'] == 'trips_file_demand':
+            self.trips = Trip.using_demand_file('./Sirui/traffic_data/sf_demand.txt', 'top', 10)(self.base)
+        elif self.config['trips']['type'] == 'deterministic':
+            self.trips: List[Trip] = Trip.deterministic_test_trip_creator(self.config['trips']['count'])(self.base)
+        elif self.config['trips']['type'] == 'random':
+            self.trips: List[Trip] = Trip.random_trip_creator(self.config['trips']['count'])(self.base)
+        else:
+            raise Exception(f'Unknown trip type: {self.config["trips"]["type"]}')
+
+        self.logger.info(f'Loaded {len(self.trips)}')
+
         self.time_step = 0
 
         self.initialized = False
         self.finished = False
         self.finished_previous_step = 0
+        self.total_number_of_vehicles = sum([t.count for t in self.trips])
 
     def render(self, mode="human"):
         raise NotImplementedError("What are you trying to render?")
@@ -52,7 +67,7 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
     def reset(
             self,
     ):
-        self.__reset_trips(self.config['trips']['randomize_factor'])
+        self.__reset_trips(randomize_factor=self.config['trips']['randomize_factor'])
 
         self.previous_perturbations = [0 for _ in range(self.base.number_of_edges())]
 
@@ -64,29 +79,8 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
 
         return self.get_current_observation_edge_vector()
 
-    def __reset_trips(self, randomized_factor):
-        if self.config['trips']['type'] == 'demand_file':
-            loaded_trips = Trip.trips_using_demand_file(self.config['trips']['demand_file'])
-            if self.config['trips']['strategy'] == 'random':
-                self.trips: List[Trip] = np.random.choice(loaded_trips, size=self.config['trips']['count'])
-            elif self.config['trips']['strategy'] == 'top':
-                self.trips: List[Trip] = loaded_trips[:self.config['trips']['count']]
-            else:
-                raise Exception(f'Unknown trip strategy: {self.config["trips"]["strategy"]}')
-
-        elif self.config['trips']['type'] == 'trips_file':
-            city = self.config['network']['city']
-            loaded_trips = Trip.trips_using_od_file(f'./TransportationNetworks/{city}/{city}_trips.tntp')
-            self.trips: List[Trip] = loaded_trips
-        elif self.config['trips']['type'] == 'deterministic':
-            self.trips: List[Trip] = Trip.deterministic_test_trip_creator(self.config['trips']['count'])(self.base)
-        elif self.config['trips']['type'] == 'random':
-            self.trips: List[Trip] = Trip.random_trip_creator(self.config['trips']['count'])(self.base)
-        else:
-            raise Exception(f'Unknown trip type: {self.config["trips"]["type"]}')
-
-        Trip.reset_trips(self.trips, randomize_factor=randomized_factor)
-
+    def __reset_trips(self, randomize_factor=0):
+        Trip.reset_trips(self.trips, randomize_factor)
 
     # Number of vehicles on edge.
     def get_on_edge_vehicles(self) -> Dict[Tuple[int, int], int]:
@@ -122,10 +116,12 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
         return on_vertex
 
     def get_travel_time(self, i: int, j: int, on_edge: int) -> int:
-        capacity = max(self.base[i][j]['capacity'] // self.config['capacity_divider'], 1)
+        capacity = self.base[i][j]['capacity']
         free_flow_time = self.base[i][j]['free_flow_time']
+        b = self.base[i][j]['b']
+        power = self.base[i][j]['power']
 
-        return free_flow_time * (1.0 + 0.15 * (on_edge * self.config['congestion'] / capacity) ** 4)
+        return free_flow_time * (1.0 + b * (on_edge * self.config['congestion'] / capacity) ** power)
 
     def __get_current_observation_graph(self):
         # I am going to do something that is not intuitive at all. I return two graphs:
@@ -166,6 +162,16 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
 
         return obs
 
+
+    # Vector of size (E, 5) where E is the number of edges.
+    # Each row is a vector of size 5:
+    # [
+    #   0: # of vehicles on nodes that pass through e as their shortest path without perturbations,
+    #   1: Current # of vehicles on e,
+    #   2: # of vehicles on nodes that immediately pass e as their shortest path without perturbations,
+    #   3: sum of remaining travel time of vehicles on e,
+    #   4:
+    # ]
     def get_current_observation_edge_vector(self):
         feature_vector = np.zeros((self.base.number_of_edges(), 5,), dtype=np.float32)
 
@@ -179,21 +185,21 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
                     self.base, t.next_node, t.destination,
                     weight=lambda u, v, d: self.get_travel_time(u, v, on_edge[(u, v)]))
                 for i in range(len(path) - 1):
-                    feature_vector[edges[(path[i], path[i + 1])]][0] += t.count
-                feature_vector[edges[(path[0], path[1])]][2] += t.count
+                    feature_vector[edges[(path[i], path[i + 1])]][0] += t.count  # feature 0
+                feature_vector[edges[(path[0], path[1])]][2] += t.count  # feature 2
                 on_node_count += 1
             if t.time_to_next != 0:
                 path = nx.shortest_path(
                     self.base, t.next_node, t.destination,
                     weight=lambda u, v, d: self.get_travel_time(u, v, on_edge[(u, v)]))
                 for i in range(len(path) - 1):
-                    feature_vector[edges[(path[i], path[i + 1])]][4] += t.count
+                    feature_vector[edges[(path[i], path[i + 1])]][4] += t.count  # feature 4
                 if t.prev_node is not None:
-                    feature_vector[edges[t.prev_node, t.next_node]][3] += (
+                    feature_vector[edges[t.prev_node, t.next_node]][3] += (  # feature 3
                                                                    t.time_to_next) / t.edge_time
 
         for i, e in enumerate(self.base.edges):
-            feature_vector[i][1] = on_edge[e]
+            feature_vector[i][1] = on_edge[e]  # feature 1
 
         return feature_vector
 
@@ -206,6 +212,16 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
                     adjacency_matrix[j][i] = 1
 
         return adjacency_matrix
+
+    def get_adjacency_list(self):
+        adjacency_list = list()
+
+        for i, e in enumerate(self.base.edges):
+            for j, a in enumerate(self.base.edges):
+                if e[1] == a[0]:
+                    adjacency_list.append((j, i))
+
+        return adjacency_list
 
     @staticmethod
     def gen_network(**config):

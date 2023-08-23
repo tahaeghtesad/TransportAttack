@@ -1,10 +1,11 @@
 import logging
 import sys
 
+import numpy as np
 from tqdm import tqdm
 
-from attack_heuristics import PostProcessHeuristic, GreedyRiderVector
-from transport_env.MultiAgentNetworkEnv import MultiAgentTransportationNetworkEnvironment
+from attack_heuristics import PostProcessHeuristic, GreedyRiderVector, Zero
+from transport_env.DynamicMultiAgentNetworkEnv import DynamicMultiAgentTransportationNetworkEnvironment
 
 if __name__ == '__main__':
 
@@ -17,68 +18,52 @@ if __name__ == '__main__':
     config = dict(
         network=dict(
             method='network_file',
-            # city='Anaheim',
             city='SiouxFalls',
         ),
-        # network=dict(
-        #     method='generate',
-        #     type='grid',
-        #     width=7,
-        #     height=7,
-        # ),
         trips=dict(
-            type='demand_file',
-            demand_file='Sirui/traffic_data/sf_demand.txt',
-            strategy='top',
-            count=10
+            type='trips_file'
         ),
-        # trips=dict(
-        #     type='deterministic',
-        #     count=10,
-        # ),
-        horizon=50,
-        epsilon=30,
+        horizon=20,
         norm=1,
         frac=0.5,
         num_sample=50,
         render_mode=None,
-        reward_multiplier=1.0,
+        # reward_multiplier=0.00001,
+        reward_multiplier=1,
         congestion=True,
-        # rewarding_rule='travel_time_increased',
         rewarding_rule='step_count',
-        repeat=100,
+        repeat=1,
         observation_type='vector',
         n_components=4,
-        norm_penalty_coeff=1.0,
-        capacity_divider=10000,
+        deterministic=False
     )
 
-    env = MultiAgentTransportationNetworkEnvironment(config)
+    env = DynamicMultiAgentTransportationNetworkEnvironment(config)
 
-    env.show_base_graph()
+    # env.show_base_graph()
 
-    rewards = 0
-    original_reward = 0
-    norm_penalty = 0
+    step_counts = []
+    reward_sum = []
 
-    greedy = PostProcessHeuristic(
-        GreedyRiderVector(
-            config['epsilon'],
-            config['norm']
-        )
-    )
-
-    # greedy = Zero(
-    #     (env.base.number_of_edges(), )
+    # greedy = PostProcessHeuristic(
+    #     GreedyRiderVector(
+    #         20,
+    #         config['norm']
+    #     )
     # )
+
+    greedy = Zero(
+        (env.base.number_of_edges(), )
+    )
 
     for episode in tqdm(range(config['repeat'])):
 
-        obs = env.reset()['feature_vector']
+        obs = env.reset()
         done = False
         truncated = False
         steps = 0
         norm_penalty_episode = 0
+        rewards = 0
 
         while not done and not truncated:
             # action = [
@@ -86,16 +71,12 @@ if __name__ == '__main__':
             # ]
             action = greedy.predict(obs)
             obs, reward, done, info = env.step(action)
-            obs = obs['feature_vector']
+            obs = obs
             # logger.info(f'Action: {[a.shape for a in action]}, Obs: {[s.shape for s in obs]}, Reward: {reward}, Done: {done}, Info: {info}')
             truncated = info.get('TimeLimit.truncated', False)
             rewards += sum(reward)
-            original_reward += info['original_reward']
-            norm_penalty_episode += info['norm_penalty']
             steps += 1
 
-        norm_penalty += norm_penalty_episode / steps
+        reward_sum += [rewards]
 
-    print(f'Average Reward: {rewards / config["repeat"]}')
-    print(f'Average Original Reward: {original_reward / config["repeat"]}')
-    print(f'Average Norm Penalty: {norm_penalty / config["repeat"]}')
+    print(f'mean: {np.mean(reward_sum)} | std: {np.std(reward_sum)} | min {np.min(reward_sum)} | max {np.max(reward_sum)}')

@@ -2,6 +2,8 @@ import random
 import networkx as nx
 from dataclasses import dataclass
 
+from util.tntp import import_od
+
 
 @dataclass
 class Trip:
@@ -13,6 +15,8 @@ class Trip:
     next_node: int
     time_to_next: int
     edge_time: int
+    count: int
+    demand: int
 
     @staticmethod
     def random_trip_creator(count):
@@ -67,13 +71,18 @@ class Trip:
             return Trip.get_trips(sample_trips)
 
     @staticmethod
-    def reset_trips(trips):
+    def trips_using_od_file(path):
+        return Trip.from_matrix(import_od(path))
+
+    @staticmethod
+    def reset_trips(trips, randomize_factor=0):
         for trip in trips:
             trip.prev_node = None
             trip.next_node = trip.start
             trip.progress = 0
             trip.time_to_next = 0
             trip.edge_time = 0
+            trip.count = int(trip.demand * (1 - randomize_factor + 2 * randomize_factor * random.random()))
 
     @staticmethod
     def get_trips(srcdest):
@@ -88,8 +97,29 @@ class Trip:
                     prev_node=None,
                     next_node=int(source),
                     time_to_next=0,
-                    edge_time=0
+                    edge_time=0,
+                    demand=1,
+                    count=1
                 )
             )
         return trips
 
+    @staticmethod
+    def from_matrix(matrix):
+        trips = list()
+        for i, (source, dest, demand) in enumerate(matrix):
+            trips.append(
+                Trip(
+                    number=i,
+                    start=int(source),
+                    destination=int(dest),
+                    progress=0,
+                    prev_node=None,
+                    next_node=int(source),
+                    time_to_next=0,
+                    edge_time=0,
+                    demand=int(demand),
+                    count=int(demand)
+                )
+            )
+        return trips

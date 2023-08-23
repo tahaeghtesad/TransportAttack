@@ -35,7 +35,7 @@ class ExperienceReplay:
         return (
             [self.states[i] for i in indices],
             [self.actions[i] for i in indices],
-            [self.next_states[i] for i in indices],
             [self.rewards[i] for i in indices],
+            [self.next_states[i] for i in indices],
             [self.dones[i] for i in indices],
         )

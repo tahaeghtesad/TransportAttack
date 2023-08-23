@@ -10,8 +10,8 @@ class GraphConvolutionLayer(torch.nn.Module):
         self.beta = torch.nn.parameter.Parameter(torch.zeros(size=(adj.shape[0], )), requires_grad=True)
 
         torch.nn.init.xavier_uniform_(self.kernel)
-        torch.nn.init.zeros_(self.bias)
-        torch.nn.init.zeros_(self.beta)
+        torch.nn.init.uniform_(self.bias)
+        torch.nn.init.uniform_(self.beta)
 
     def forward(self, x):
         diag = torch.diag(torch.reciprocal(torch.sum(self.adjacency_matrix, dim=1) + self.beta))
@@ -21,8 +21,8 @@ class GraphConvolutionLayer(torch.nn.Module):
     def __repr__(self):
         return f'GraphConvolutionLayer(' \
                f'Kernel={self.kernel.size()},' \
-               f' Bias={self.bias.shape},' \
-               f' Beta={self.beta.shape})'
+               f' Bias={self.bias.shape})' \
+               # f' Beta={self.beta.shape})'
 
 
 class GraphConvolutionResidualBlock(torch.nn.Module):
