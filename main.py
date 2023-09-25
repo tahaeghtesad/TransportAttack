@@ -2,13 +2,12 @@ import logging
 import sys
 
 import gym
-import matplotlib.pyplot as plt
 import numpy as np
 import util.graphing as graphing
 
-import attack_heuristics
-from attack_heuristics import PostProcessHeuristic
-from transport_env.DynamicMultiAgentNetworkEnv import DynamicMultiAgentTransportationNetworkEnvironment
+from models import attack_heuristics
+from models.attack_heuristics import PostProcessHeuristic
+from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
 
 if __name__ == '__main__':
 
@@ -49,11 +48,11 @@ if __name__ == '__main__':
 
     strategies = [
         PostProcessHeuristic(
-            attack_heuristics.Zero((76, ))),
+            attack_heuristics.Zero((76,))),
         PostProcessHeuristic(
-            attack_heuristics.Random((76, ), config['norm'], config['epsilon'], config['frac'], 'continuous')),
+            attack_heuristics.Random((76,), config['norm'], config['epsilon'], config['frac'], 'continuous')),
         PostProcessHeuristic(
-            attack_heuristics.Random((76, ), config['norm'], config['epsilon'], config['frac'], 'discrete')),
+            attack_heuristics.Random((76,), config['norm'], config['epsilon'], config['frac'], 'discrete')),
         PostProcessHeuristic(
             attack_heuristics.GreedyRiderVector(config['epsilon'], config['norm']),
         )

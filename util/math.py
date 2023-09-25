@@ -5,8 +5,7 @@ from scipy import optimize as op
 
 
 def sigmoid(x, sl=1.0, th=0.0):
-    answer = 1.0/(1 + math.exp(-sl * (x - th)))
-    assert 0 <= answer <= 1, f'{answer} for {x}'
+    answer = 1.0/(1 + np.exp(-sl * (x - th)))
     return answer
 
 

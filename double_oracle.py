@@ -7,9 +7,9 @@ import random
 import numpy as np
 import torch
 
-from attack_heuristics import GreedyRiderVector
+from models.attack_heuristics import GreedyRiderVector
 from models.double_oracle.trainer import Trainer
-from transport_env.DynamicMultiAgentNetworkEnv import DynamicMultiAgentTransportationNetworkEnvironment
+from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
 
 if __name__ == '__main__':
     run_id = f'{datetime.now().strftime("%Y%m%d-%H%M%S")}'

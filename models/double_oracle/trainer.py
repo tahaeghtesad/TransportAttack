@@ -3,12 +3,11 @@ import random
 
 import numpy as np
 from sklearn.metrics import confusion_matrix
-from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
-from attack_heuristics import Random
-from models.torch.classifier import Classifier
-from models.torch.hmaddpg import MADDPGModel
+from models.attack_heuristics import Random
+from models.dl.classifier import Classifier
+from models.dl.hmaddpg import MADDPGModel
 from util.graphing import create_roc_curve
 from util.math import solve_lp
 from util.rl.experience_replay import ExperienceReplay
@@ -138,7 +137,7 @@ class Trainer:
 
                 if replay_buffer.size() > self.config['rl_config']['batch_size']:
                     for _ in range(self.config['rl_config']['updates']):
-                        states, actions, rewards, next_states, dones = replay_buffer.sample()
+                        states, actions, rewards, next_states, dones = replay_buffer.get_experiences()
                         stat = attacker_model.update_multi_agent(states, actions, next_states, rewards, dones)
                         stats.append(stat)
 

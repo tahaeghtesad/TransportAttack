@@ -1,27 +1,26 @@
 import logging
+import random
 
 import gym
 import networkx as nx
 import numpy as np
 from matplotlib import pyplot as plt
-from tqdm import tqdm
 
 from transport_env.BaseNetworkEnv import BaseTransportationNetworkEnv
+from util.math import sigmoid
 
 
-class MultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
+class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
 
     def __init__(self, config) -> None:
         super().__init__(config)
         self.logger = logging.getLogger(__name__)
 
         self.n_components = config['n_components']
-        self.partition_graph(self.n_components, n_repeat=5000)
+        self.partition_graph(self.n_components, n_repeat=500)
         self.edge_component_mapping = self.__get_edge_component_mapping()
 
-        self.logger.info(f'Components: {[(comp, len(self.edge_component_mapping[comp])) for comp in range(self.n_components)]}')
-
-        assert config['norm'] in [0, 1, np.inf], 'Budget norm must be 0, 1, or np.inf'
+        self.logger.info(f'Components: {[len(self.edge_component_mapping[comp]) for comp in range(self.n_components)]}')
 
         self.action_space = [
             gym.spaces.Box(low=0.0, high=1.0, shape=(len(self.edge_component_mapping[comp]),)) for comp in range(self.n_components)
@@ -29,20 +28,19 @@ class MultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
 
         self.observation_space = [
             gym.spaces.Box(low=0.0, high=np.inf, shape=(len(self.edge_component_mapping[comp]), 5)) for comp in range(self.n_components)
-        ]  # Observation: dict(feature_vector, budget)
+        ]  # Observation: dict(feature_vector, allocation)
 
-        self.last_allocation = np.zeros(self.n_components)
+        vehicles_in_components = [[0, 0] for _ in range(self.n_components)]
+        for t in self.trips:
+            vehicles_in_components[self.base.nodes[t.next_node]['component']][0] += t.count
+            vehicles_in_components[self.base.nodes[t.next_node]['component']][1] += 1
+
+        self.logger.info(f'Vehicles in component: {vehicles_in_components}')
 
     def reset(self):
         super().reset()
 
-        feature_vector = self.get_current_observation_edge_vector()
-        allocation = self.get_allocation()
-
-        return dict(
-            feature_vector=feature_vector,
-            allocation=allocation
-        )
+        return self.get_current_observation_edge_vector()
 
     def step(self, action: np.ndarray):
         original_action = action
@@ -57,19 +55,20 @@ class MultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
 
         remaining_trips = 0
         on_edge = self.get_on_edge_vehicles()
+        on_vertex = self.get_on_vertex_vehicles()
 
-        # Calculating component action allocation penalty
-        component_allocation = np.zeros(self.n_components)
-        for c in range(self.n_components):
-            component_allocation[c] = np.sum(action[self.edge_component_mapping[c]])
-        component_allocation_norm = np.linalg.norm(component_allocation, ord=self.norm)
-        component_allocation = np.divide(component_allocation, component_allocation_norm, where=component_allocation_norm != 0)
-        component_action_penalty = np.maximum(0, component_allocation - self.last_allocation)
-
-        # Normalizing to component allocation
-        for c in range(self.n_components):
-            component_norm = np.linalg.norm(action[self.edge_component_mapping[c]], ord=self.norm)
-            action[self.edge_component_mapping[c]] = np.divide(action[self.edge_component_mapping[c]], component_norm, where=component_norm != 0) * self.budget * self.last_allocation[c]
+        # # Calculating component action allocation penalty
+        # component_allocation = np.zeros(self.n_components)
+        # for c in range(self.n_components):
+        #     component_allocation[c] = np.sum(action[self.edge_component_mapping[c]])
+        # component_allocation_norm = np.linalg.norm(component_allocation, ord=self.norm)
+        # component_allocation = np.divide(component_allocation, component_allocation_norm, where=component_allocation_norm != 0)
+        # component_action_penalty = np.maximum(0, component_allocation - self.last_allocation)
+        #
+        # # Normalizing to component allocation
+        # for c in range(self.n_components):
+        #     component_norm = np.linalg.norm(action[self.edge_component_mapping[c]], ord=self.norm)
+        #     action[self.edge_component_mapping[c]] = np.divide(action[self.edge_component_mapping[c]], component_norm, where=component_norm != 0) * self.allocation * self.last_allocation[c]
 
         # Calculating the transition
 
@@ -79,6 +78,7 @@ class MultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
 
         currently_finished = 0
         component_time_diff = np.zeros(self.n_components)
+        arrived_vehicles = np.zeros(self.n_components)
 
         for trip in self.trips:
             if trip.next_node == trip.destination and trip.time_to_next == 0:  # trip is finished
@@ -95,7 +95,7 @@ class MultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
                 path = nx.shortest_path(
                     self.base,
                     trip.next_node,
-                     trip.destination,
+                    trip.destination,
                     weight=lambda u, v, _: np.maximum(0, self.get_travel_time(u, v, on_edge[(u, v)]) + perturbed[(u, v)])
                 )
                 path_weights = [self.get_travel_time(path[i], path[i+1], on_edge[(path[i], path[i+1])]) + perturbed[(path[i], path[i+1])] for i in range(len(path) - 1)]
@@ -114,9 +114,8 @@ class MultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
 
                 trip.prev_node = trip.next_node
                 trip.next_node = path[1]
-                # This is not the weight, but perturbed weight
-                trip.time_to_next = self.get_travel_time(trip.prev_node, trip.next_node,
-                                                         on_edge[(trip.prev_node, trip.next_node)])
+                trip.time_to_next = round(self.get_travel_time(trip.prev_node, trip.next_node,
+                                                         on_edge[(trip.prev_node, trip.next_node)]))
                 trip.edge_time = trip.time_to_next
 
                 self.logger.log(1, f'Step {self.time_step}.'
@@ -134,27 +133,32 @@ class MultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
                                    f' Will arrive there in {trip.time_to_next} steps.')
                 trip.time_to_next -= 1
 
+            if trip.time_to_next == 1 and trip.next_node == trip.destination:
+                arrived_vehicles[self.base.nodes[trip.next_node]['component']] += trip.count
+
         # Fixing the environment observation, reward, done, and info
         if remaining_trips == 0:
             self.finished = True
 
         done = self.finished
 
+        info = dict(
+            original_reward=self.get_reward(),
+            perturbed_edge_travel_times=[self.get_travel_time(u, v, on_edge[(u, v)]) + perturbed[(u, v)] for u, v in self.base.edges]
+        )
+
         vehicles_in_component = np.zeros(self.n_components)
         on_edge = self.get_on_edge_vehicles()
         on_vertex = self.get_on_vertex_vehicles()
         for e in on_edge:
-            vehicles_in_component[self.base.edges[e]['component']] += 1
+            vehicles_in_component[self.base.edges[e]['component']] += on_edge[e]
         for v in on_vertex:
-            vehicles_in_component[self.base.nodes[v]['component']] += 1
+            vehicles_in_component[self.base.nodes[v]['component']] += on_vertex[v]
 
-        info = dict(
-            original_reward=self.get_reward(),
-        )
+        info['will_the_attack_count'] = not sum(on_vertex.values()) == 0
+        info['vehicles_making_decision'] = sum(on_vertex.values())
         if self.time_step >= self.config['horizon']:
             info['TimeLimit.truncated'] = True
-
-        self.last_allocation = self.get_allocation()
 
         feature_vector = self.get_current_observation_edge_vector()
 
@@ -163,28 +167,27 @@ class MultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
         if self.config['rewarding_rule'] == 'travel_time_increased':
             reward = component_time_diff
         elif self.config['rewarding_rule'] == 'step_count':
-            reward = vehicles_in_component * self.config['reward_multiplier']
+            reward = vehicles_in_component
+        elif self.config['rewarding_rule'] == 'proportional':
+            reward = vehicles_in_component / self.max_number_of_vehicles
+        elif self.config['rewarding_rule'] == 'arrived':
+            reward = -arrived_vehicles
         else:
             raise Exception(f'Rewarding rule {self.config["rewarding_rule"]} not implemented.')
 
-        reward -= self.config['norm_penalty_coeff'] * component_action_penalty
-        info['norm_penalty'] = sum(component_action_penalty)
-        info['perturbed_edge_travel_times'] = np.array(
-            [self.get_travel_time(u, v, on_edge[(u, v)]) + perturbed[(u, v)] for u, v in self.base.edges]
-        )
+        # reward = reward * self.config['reward_multiplier'] - self.config['norm_penalty_coeff'] * component_action_penalty
+        # info['norm_penalty'] = sum(component_action_penalty)
+        reward *= self.config['reward_multiplier']
 
-        return dict(
-            feature_vector=feature_vector,
-            allocation=self.last_allocation,
-        ), reward, done, info
+        return feature_vector, reward, done, info
 
     # This function partitions the graph into n_component components:
     def partition_graph(self, n_components, n_repeat=100):
 
         assert n_components <= self.base.number_of_nodes(), f'Number of components should be less than the number of nodes in the graph. {n_components} >= {self.base.number_of_nodes()}'
 
-        # centroids = random.sample(self.base.nodes, k=n_components)
-        centroids = [i + 1 for i in range(n_components)]
+        centroids = random.sample(self.base.nodes, k=n_components)
+        # centroids = [i + 1 for i in range(n_components)]
         for i, c in enumerate(centroids):
             self.base.nodes[c]['component'] = i
             # nx.set_node_attributes(self.base, {c: {'component': i}})
@@ -194,11 +197,8 @@ class MultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
             weight=lambda u, v, _: np.maximum(0, self.base.edges[(u, v)]['free_flow_time'])
         ))  # A dict with key being the 'source_node' and value is (distance, path)
 
-        # all_pairs_distance = np.array(
-        #     [[all_pairs_distance[i][0][j] for j in range(1, self.base.number_of_nodes() + 1)] for i in range(1, self.base.number_of_nodes() + 1)]
-        # )
-
-        for _ in tqdm(range(n_repeat), desc='Partitioning graph'):  # _ is the K-Means clustering algorithm.
+        self.logger.info(f'Partitioning graph into {n_components} components. Repeat: {n_repeat}')
+        for _ in range(n_repeat):  # _ is the K-Means clustering algorithm.
 
             for node in self.base:  # Assigning each node to its closest centroid
                 distance_to_centroids = [all_pairs_distance[node][0][c] for c in centroids]
@@ -224,6 +224,17 @@ class MultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
         for e in self.base.edges:
             self.base.edges[e]['component'] = self.base.nodes[e[0]]['component']
 
+    def get_travel_times_assuming_the_attack(self, action):
+        action = np.maximum(action, 0)
+
+        on_edge = self.get_on_edge_vehicles()
+
+        perturbed = dict()
+        for i, e in enumerate(self.base.edges):
+            perturbed[e] = action[i]
+
+        return [self.get_travel_time(u, v, on_edge[(u, v)]) + perturbed[(u, v)] for u, v in self.base.edges]
+
     def show_base_graph(self):
         pos = nx.spectral_layout(self.base)
 
@@ -233,8 +244,8 @@ class MultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
         fig.set_figwidth(25)
         ax.margins(0.0)
         plt.axis("off")
-        node_colors = [MultiAgentTransportationNetworkEnvironment.get_color_by_component(self.base.nodes[n]['component']) for n in self.base.nodes]
-        edge_colors = [MultiAgentTransportationNetworkEnvironment.get_color_by_component(self.base.edges[n]['component']) for n in self.base.edges]
+        node_colors = [DynamicMultiAgentTransportationNetworkEnvironment.get_color_by_component(self.base.nodes[n]['component']) for n in self.base.nodes]
+        edge_colors = [DynamicMultiAgentTransportationNetworkEnvironment.get_color_by_component(self.base.edges[n]['component']) for n in self.base.edges]
 
         nx.draw(self.base, pos=pos, ax=ax, node_color=node_colors, edge_color=edge_colors, with_labels=True)
         plt.show()
@@ -282,10 +293,7 @@ class MultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
             edge_component_mapping[self.base.edges[e]['component']].append(i)
         return edge_component_mapping
 
-    def get_allocation(self):
-        on_vertex = self.get_on_vertex_vehicles()
-        allocation = np.zeros(self.n_components)
-        for n in self.base.nodes:
-            allocation[self.base.nodes[n]['component']] += on_vertex[n]
-        allocation_norm = np.linalg.norm(allocation, ord=self.norm)
-        return np.divide(allocation, allocation_norm, where=allocation_norm != 0)
+    def get_component_edge_mapping(self):
+        return [
+            self.base.edges[e]['component'] for e in self.base.edges
+        ]

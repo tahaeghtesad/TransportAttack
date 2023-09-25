@@ -12,18 +12,22 @@ def create_box_plot(
         x_label: str,
         x_ticks: list[str],
         y_label: str,
-        save_path: str,
+        save_path: str | None,
         show=False,
 ):
     fig, ax = plt.subplots()
     ax.spines[['bottom', 'top']].set_visible(False)
-    ax.boxplot(data)
+    ax.boxplot(data.T)
     ax.set_title(title)
     ax.set_xlabel(x_label)
     ax.set_xticks(
-        ticks=np.arange(len(x_ticks)),
-        labels=x_ticks
+        ticks=np.arange(len(x_ticks)) + 1,
+        labels=x_ticks,
+        rotation=10,
+        rotation_mode='anchor',
     )
+    ax.yaxis.grid(True)
+    ax.yaxis.grid(True, which='minor', linestyle='--')
     ax.set_ylabel(y_label)
     __save(save_path)
     if show:
@@ -39,7 +43,7 @@ def create_grouped_box_plot(
         x_ticks: list[str],
         y_label_1: str,
         y_label_2: str,
-        save_path: str,
+        save_path: str | None,
         show=False,
 ):
     positions = np.arange(len(x_ticks))
@@ -67,7 +71,7 @@ def create_roc_curve(
         y_pred: np.ndarray,
         y_true: np.ndarray,
         title: str,
-        save_path: str,
+        save_path: str | None,
         show=False,
 ):
     fpr, tpr, thres = roc_curve(y_true, y_pred)
