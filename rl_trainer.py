@@ -33,6 +33,7 @@ def train_single(
         allocator_batch_size,
         allocator_max_concentration,
         allocator_clip_range_vf,
+        log_stdout=True,
 ):
 
     # random.seed(0)
@@ -40,17 +41,20 @@ def train_single(
     # torch.manual_seed(0)
 
     # run_id = f'{datetime.now().strftime("%Y%m%d-%H%M%S")}'
-    run_id = f'erf={env_randomize_factor},a_lr={allocator_actor_lr},c_lr={allocator_critic_lr},a_g={allocator_gamma},a_l={allocator_lam},a_e={allocator_epsilon},a_ec={allocator_entropy_coeff},a_vc={allocator_value_coeff},a_nu={allocator_n_updates},a_pgc={allocator_policy_grad_clip},a_bs={allocator_batch_size},a_mc={allocator_max_concentration},a_crv={allocator_clip_range_vf}'
+    run_id = f'erf={env_randomize_factor},a_lr={allocator_actor_lr},c_lr={allocator_critic_lr},a_g={allocator_gamma},a_l={allocator_lam},a_e={allocator_epsilon},a_ec={allocator_entropy_coeff},a_vc={allocator_value_coeff},a_nu={allocator_n_updates},a_pgc={allocator_policy_grad_clip},a_bs={allocator_batch_size},a_mc={allocator_max_concentration},a_crv={allocator_clip_range_vf},{datetime.now().strftime("%H%M%S")}'
     writer = tb.SummaryWriter(f'logs/{run_id}')
     os.makedirs(f'logs/{run_id}/weights')
+
+    log_handlers = [
+        logging.FileHandler(f'logs/{run_id}/log.log'),
+    ]
+    if log_stdout:
+        log_handlers.append(logging.StreamHandler(sys.stdout))
 
     logging.basicConfig(
         format='[%(asctime)s] [%(name)s] [%(threadName)s] [%(levelname)s] - %(message)s',
         level=logging.INFO,
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(f'logs/{run_id}/log.log'),
-        ]
+        handlers=log_handlers
     )
 
     logger = logging.getLogger('main')
@@ -76,7 +80,7 @@ def train_single(
     env = DynamicMultiAgentTransportationNetworkEnvironment(env_config)
 
     n_steps = 512
-    total_steps = n_steps * 600
+    total_steps = n_steps * 192
 
     model = Attacker(
         name='FixedBudgetDDPGAllocatorGreedyComponent',

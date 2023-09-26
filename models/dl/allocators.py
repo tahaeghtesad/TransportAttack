@@ -103,8 +103,8 @@ class StochasticActor(CustomModule):
             torch.nn.Linear(64 + 1, 64),
             torch.nn.ReLU(),
             torch.nn.Linear(64, self.n_components),
-            torch.nn.Sigmoid(),
-            # torch.nn.Softmax(dim=1),
+            # torch.nn.Sigmoid(),
+            torch.nn.Softmax(dim=1),
         )
 
     def forward(self, aggregated_state, budgets, deterministic):
