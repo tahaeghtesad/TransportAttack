@@ -458,8 +458,8 @@ class PPOAllocator(AllocatorInterface):
             #     raise Exception(f'kl_divergence is too small... Policy not updated... exiting... {kl_divergence:.8f}|{ratio.max():.8f}|{ratio.min():.8f}')
 
         view = np.array(log_prob_diff_history)
-        view = (view - view.mean(axis=0)) / view.std(axis=0)
-        # print(view)
+        # view = (view - view.mean(axis=0)) / view.std(axis=0)
+        print(view)
 
         return {
             'allocator/v_loss': np.mean(value_loss_history),

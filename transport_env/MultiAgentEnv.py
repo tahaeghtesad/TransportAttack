@@ -12,8 +12,8 @@ from util.math import sigmoid
 
 class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
 
-    def __init__(self, config) -> None:
-        super().__init__(config)
+    def __init__(self, config, base_path='.') -> None:
+        super().__init__(config, base_path)
         self.logger = logging.getLogger(__name__)
 
         self.n_components = config['n_components']

@@ -33,20 +33,23 @@ def train_single(
         allocator_batch_size,
         allocator_max_concentration,
         allocator_clip_range_vf,
-        log_stdout=True,
+        greedy_epsilon,
+        log_stdout=False,
 ):
 
-    # random.seed(0)
-    # np.random.seed(0)
-    # torch.manual_seed(0)
+    random.seed(0)
+    np.random.seed(0)
+    torch.manual_seed(0)
+    base_path = '/Users/txe5135/PycharmProjects/TransportAttack'
 
     # run_id = f'{datetime.now().strftime("%Y%m%d-%H%M%S")}'
-    run_id = f'erf={env_randomize_factor},a_lr={allocator_actor_lr},c_lr={allocator_critic_lr},a_g={allocator_gamma},a_l={allocator_lam},a_e={allocator_epsilon},a_ec={allocator_entropy_coeff},a_vc={allocator_value_coeff},a_nu={allocator_n_updates},a_pgc={allocator_policy_grad_clip},a_bs={allocator_batch_size},a_mc={allocator_max_concentration},a_crv={allocator_clip_range_vf},{datetime.now().strftime("%H%M%S")}'
-    writer = tb.SummaryWriter(f'logs/{run_id}')
-    os.makedirs(f'logs/{run_id}/weights')
+    # run_id = f'erf={env_randomize_factor:},a_lr={allocator_actor_lr},c_lr={allocator_critic_lr},a_g={allocator_gamma},a_l={allocator_lam},a_e={allocator_epsilon},a_ec={allocator_entropy_coeff},a_vc={allocator_value_coeff},a_nu={allocator_n_updates},a_pgc={allocator_policy_grad_clip},a_bs={allocator_batch_size},a_mc={allocator_max_concentration},a_crv={allocator_clip_range_vf},ge={greedy_epsilon},{datetime.now().strftime("%H%M%S")}'
+    run_id = f'erf={env_randomize_factor:.5f},a_lr={allocator_actor_lr:.5f},c_lr={allocator_critic_lr:.5f},a_g={allocator_gamma:.5f},a_l={allocator_lam:.5f},a_e={allocator_epsilon:.5f},a_ec={allocator_entropy_coeff:.5f},a_vc={allocator_value_coeff:.5f},a_nu={allocator_n_updates},a_pgc={allocator_policy_grad_clip},a_bs={allocator_batch_size},a_mc={allocator_max_concentration:.5f},a_crv={allocator_clip_range_vf},ge={greedy_epsilon:.5f},{datetime.now().strftime("%H%M%S%f")}'
+    writer = tb.SummaryWriter(f'{base_path}/logs/{run_id}')
+    os.makedirs(f'{base_path}/logs/{run_id}/weights')
 
     log_handlers = [
-        logging.FileHandler(f'logs/{run_id}/log.log'),
+        logging.FileHandler(f'{base_path}/logs/{run_id}/log.log'),
     ]
     if log_stdout:
         log_handlers.append(logging.StreamHandler(sys.stdout))
@@ -77,7 +80,7 @@ def train_single(
         n_components=4,
     )
 
-    env = DynamicMultiAgentTransportationNetworkEnvironment(env_config)
+    env = DynamicMultiAgentTransportationNetworkEnvironment(env_config, base_path=base_path)
 
     n_steps = 512
     total_steps = n_steps * 192
@@ -116,7 +119,7 @@ def train_single(
 
     logger.info(model)
 
-    with open(f'logs/{run_id}/config.json', 'w') as fd:
+    with open(f'{base_path}/logs/{run_id}/config.json', 'w') as fd:
         json.dump(env_config, fd, indent=4)
 
     device = torch.device('cpu')
@@ -126,7 +129,7 @@ def train_single(
     # buffer = ExperienceReplay(100_000, 64)
     buffer = TrajectoryExperience()
     model = model.to(device)
-    pbar = tqdm(total=total_steps, desc='Training')
+    pbar = tqdm(total=total_steps, desc='Training', disable=not log_stdout)
 
     global_step = 0
     total_samples = 0
@@ -141,6 +144,7 @@ def train_single(
     discounted_reward = 0
     original_reward = 0
     episode = 0
+    original_reward_history = []
 
     while global_step < total_steps:
 
@@ -150,7 +154,7 @@ def train_single(
             step += 1
             global_step += 1
 
-            action, allocation, budget = model.forward_single(state, deterministic=random.random() < 0.5)
+            action, allocation, budget = model.forward_single(state, deterministic=random.random() < greedy_epsilon)
             next_state, reward, done, info = env.step(action)
 
             truncated = info.get("TimeLimit.truncated", False)
@@ -164,6 +168,8 @@ def train_single(
             total_samples += 1
 
             if done or truncated:
+
+                original_reward_history.append(original_rewards)
 
                 writer.add_scalar(f'env/cumulative_reward', rewards, global_step)
                 writer.add_scalar(f'env/discounted_reward', discounted_reward, global_step)
@@ -193,11 +199,7 @@ def train_single(
                 original_reward = 0
                 episode += 1
 
-        try:
-            stats = model.update(*buffer.get_experiences())
-        except Exception as e:
-            logger.error(e)
-            return False
+        stats = model.update(*buffer.get_experiences())
 
         for name, value in stats.items():
             if type(value) is list:
@@ -209,4 +211,4 @@ def train_single(
 
         buffer.reset()
 
-    return True
+        yield dict(episode_reward=np.mean(original_reward_history[-10:]))

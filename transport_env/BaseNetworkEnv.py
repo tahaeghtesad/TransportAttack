@@ -13,7 +13,7 @@ from util import tntp
 
 
 class BaseTransportationNetworkEnv(gym.Env, ABC):
-    def __init__(self, config):
+    def __init__(self, config, base_path='.'):
         super().__init__()
 
         self.logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
             self.logger.info(f'Loading network for city {city}')
             self.base: nx.DiGraph = nx.from_pandas_edgelist(
                 df=tntp.load_net(
-                    path=f'./TransportationNetworks/{city}/{city}_net.tntp'),
+                    path=f'{base_path}/TransportationNetworks/{city}/{city}_net.tntp'),
                 source="init_node",
                 target="term_node",
                 edge_attr=True,
@@ -41,10 +41,10 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
 
         if self.config['trips']['type'] == 'trips_file':
             city = self.config['network']['city']
-            loaded_trips = Trip.trips_using_od_file(f'./TransportationNetworks/{city}/{city}_trips.tntp')
+            loaded_trips = Trip.trips_using_od_file(f'{base_path}/TransportationNetworks/{city}/{city}_trips.tntp')
             self.trips: List[Trip] = loaded_trips
         elif self.config['trips']['type'] == 'trips_file_demand':
-            self.trips = Trip.using_demand_file('./Sirui/traffic_data/sf_demand.txt', 'top', 10)(self.base)
+            self.trips = Trip.using_demand_file(f'{base_path}/Sirui/traffic_data/sf_demand.txt', 'top', 10)(self.base)
         elif self.config['trips']['type'] == 'deterministic':
             self.trips: List[Trip] = Trip.deterministic_test_trip_creator(self.config['trips']['count'])(self.base)
         elif self.config['trips']['type'] == 'random':

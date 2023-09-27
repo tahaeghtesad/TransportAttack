@@ -1,25 +1,12 @@
 import tqdm
 
+
 from rl_trainer import train_single
 from multiprocessing import Pool
 
 if __name__ == '__main__':
 
     params = []
-
-    # env_randomize_factor,
-    # allocator_actor_lr,
-    # allocator_critic_lr,
-    # allocator_gamma,
-    # allocator_lam,
-    # allocator_epsilon,
-    # allocator_entropy_coeff,
-    # allocator_value_coeff,
-    # allocator_n_updates,
-    # allocator_policy_grad_clip,
-    # allocator_batch_size,
-    # allocator_max_concentration,
-    # allocator_clip_range_vf,
 
     for env_randomize_factor in [0.001]:
         for allocator_actor_lr in [0.0003, 0.0001, 0.00001, 0.000001]:
