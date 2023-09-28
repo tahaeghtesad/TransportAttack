@@ -20,8 +20,8 @@ class BaseAttacker(AttackerInterface):
 
     def forward_single(self, observation, deterministic):
         observation = torch.unsqueeze(torch.from_numpy(observation), dim=0).to(self.device)
-        action, allocations, budgets = self.forward(observation, deterministic=deterministic)
-        return action.cpu().detach().numpy()[0], allocations.cpu().detach().numpy()[0], budgets.cpu().detach().numpy()[
+        constructed_action, action, allocations, budgets = self.forward(observation, deterministic=deterministic)
+        return constructed_action.cpu().detach().numpy()[0], action.cpu().detach().numpy()[0], allocations.cpu().detach().numpy()[0], budgets.cpu().detach().numpy()[
             0]
 
     def update(self, observation, allocations, budgets, action, reward, next_observation, done, truncateds):
@@ -46,6 +46,12 @@ class BaseAttacker(AttackerInterface):
             )
         return aggregated
 
+    def _construct_action(self, actions, allocations, budgets):
+        constructed_actions = torch.zeros((actions.shape[0], self.n_edges), device=self.device)
+        for c in range(self.n_components):
+            constructed_actions[:, self.edge_component_mapping[c]] = actions[:, self.edge_component_mapping[c]] * allocations[:, [c]] * budgets
+        return constructed_actions
+
 
 class FixedBudgetNetworkedWideGreedy(BaseAttacker):
     def __init__(self, edge_component_mapping, budget, budget_noise) -> None:
@@ -57,7 +63,9 @@ class FixedBudgetNetworkedWideGreedy(BaseAttacker):
         allocations = torch.zeros((observation.shape[0], self.n_components), device=self.device)
         for c in range(self.n_components):
             allocations[:, c] = torch.sum(actions[:, self.edge_component_mapping[c]], dim=1)
-        return actions, allocations, torch.ones((observation.shape[0], 1), device=self.device) * self.budgeting.budget
+
+        # action here is the same as constructed_action
+        return actions, actions, allocations, torch.ones((observation.shape[0], 1), device=self.device) * self.budgeting.budget
 
 
 class Attacker(BaseAttacker):
@@ -78,7 +86,8 @@ class Attacker(BaseAttacker):
         budgets = self.budgeting.forward(aggregated, deterministic=deterministic)
         allocations = self.allocator.forward(aggregated, budgets, deterministic=deterministic)
         actions = self.component.forward(observation, budgets, allocations, deterministic=deterministic)
-        return actions, allocations, budgets
+        constructed_action = self._construct_action(actions, allocations, budgets)
+        return constructed_action, actions, allocations, budgets
 
     def _update(self, observation, allocations, budgets, actions, rewards, next_observations, dones, truncateds):
         with torch.no_grad():

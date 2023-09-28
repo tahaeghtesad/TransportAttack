@@ -35,14 +35,13 @@ if __name__ == '__main__':
             horizon=50,
             num_sample=20,
             render_mode=None,
-            reward_multiplier=0.00001,
+            reward_multiplier=1.0,
             congestion=True,
             trips=dict(
                 type='trips_file',
-                randomize_factor=0.02,
+                randomize_factor=0.001,
             ),
             rewarding_rule='proportional',
-            norm_penalty_coeff=1.0,
             n_components=4,
         )
     )
@@ -63,7 +62,7 @@ if __name__ == '__main__':
             ProportionalAllocator(),
             GreedyComponent(env.edge_component_mapping)
         ),
-        torch.load('logs/20230912-170344/weights/Attacker_2392.tar', map_location=device),
+        # torch.load('logs/20230912-170344/weights/Attacker_2392.tar', map_location=device),
         # torch.load('logs/20230911-155405/weights/Attacker_4000.tar', map_location=device),
     ]
     logger.info(models)
@@ -82,9 +81,9 @@ if __name__ == '__main__':
             reward = 0
             episode_reward = 0
             while not done and not truncated:
-                action, allocation, budget = model.forward_single(o, deterministic=True)
+                constructed_action, action, allocation, budget = model.forward_single(o, deterministic=True)
 
-                no, r, done, i = env.step(action)
+                no, r, done, i = env.step(constructed_action)
                 truncated = i.get("TimeLimit.truncated", False)
                 original_reward = i['original_reward']
                 o = no

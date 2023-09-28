@@ -14,7 +14,7 @@ class GreedyComponent(ComponentInterface):
     def forward(self, states, budgets, allocations, deterministic):
         action = torch.empty((states.shape[0], self.n_edges), device=self.device)
         for c in range(self.n_components):
-            action[:, self.edge_component_mapping[c]] = budgets * allocations[:, c] * torch.nn.functional.normalize(
+            action[:, self.edge_component_mapping[c]] = torch.nn.functional.normalize(
                 states[:, self.edge_component_mapping[c], 0], p=1, dim=1)
         return action
 

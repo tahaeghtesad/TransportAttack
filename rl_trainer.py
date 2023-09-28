@@ -11,7 +11,9 @@ from torch.utils import tensorboard as tb
 from tqdm import tqdm
 
 from models.dl.allocators import PPOAllocator
+from models.dl.component import PPOComponent
 from models.dl.noise import OUActionNoise
+from models.heuristics.allocators import ProportionalAllocator
 from models.heuristics.budgeting import FixedBudgeting
 from models.heuristics.component import GreedyComponent
 from models.rl_attackers import Attacker
@@ -20,6 +22,7 @@ from util.rl.experience_replay import TrajectoryExperience
 
 
 def train_single(
+        n_steps,
         env_randomize_factor,
         allocator_actor_lr,
         allocator_critic_lr,
@@ -31,8 +34,21 @@ def train_single(
         allocator_n_updates,
         allocator_policy_grad_clip,
         allocator_batch_size,
-        allocator_max_concentration,
         allocator_clip_range_vf,
+        allocator_kl_coeff,
+        allocator_normalize_advantages,
+        # component_actor_lr,
+        # component_critic_lr,
+        # component_gamma,
+        # component_lam,
+        # component_epsilon,
+        # component_entropy_coeff,
+        # component_value_coeff,
+        # component_n_updates,
+        # component_policy_grad_clip,
+        # component_batch_size,
+        # component_max_concentration,
+        # component_clip_range_vf,
         greedy_epsilon,
         log_stdout=False,
 ):
@@ -43,8 +59,7 @@ def train_single(
     base_path = '/Users/txe5135/PycharmProjects/TransportAttack'
 
     # run_id = f'{datetime.now().strftime("%Y%m%d-%H%M%S")}'
-    # run_id = f'erf={env_randomize_factor:},a_lr={allocator_actor_lr},c_lr={allocator_critic_lr},a_g={allocator_gamma},a_l={allocator_lam},a_e={allocator_epsilon},a_ec={allocator_entropy_coeff},a_vc={allocator_value_coeff},a_nu={allocator_n_updates},a_pgc={allocator_policy_grad_clip},a_bs={allocator_batch_size},a_mc={allocator_max_concentration},a_crv={allocator_clip_range_vf},ge={greedy_epsilon},{datetime.now().strftime("%H%M%S")}'
-    run_id = f'erf={env_randomize_factor:.5f},a_lr={allocator_actor_lr:.5f},c_lr={allocator_critic_lr:.5f},a_g={allocator_gamma:.5f},a_l={allocator_lam:.5f},a_e={allocator_epsilon:.5f},a_ec={allocator_entropy_coeff:.5f},a_vc={allocator_value_coeff:.5f},a_nu={allocator_n_updates},a_pgc={allocator_policy_grad_clip},a_bs={allocator_batch_size},a_mc={allocator_max_concentration:.5f},a_crv={allocator_clip_range_vf},ge={greedy_epsilon:.5f},{datetime.now().strftime("%H%M%S%f")}'
+    run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")},erf={env_randomize_factor:.5f},a_lr={allocator_actor_lr:.5f},c_lr={allocator_critic_lr:.5f},a_g={allocator_gamma:.5f},a_l={allocator_lam:.5f},a_e={allocator_epsilon:.5f},a_ec={allocator_entropy_coeff:.5f},a_vc={allocator_value_coeff:.5f},a_nu={allocator_n_updates},a_pgc={allocator_policy_grad_clip},a_bs={allocator_batch_size},a_crv={allocator_clip_range_vf},ge={greedy_epsilon:.5f}'
     writer = tb.SummaryWriter(f'{base_path}/logs/{run_id}')
     os.makedirs(f'{base_path}/logs/{run_id}/weights')
 
@@ -73,6 +88,7 @@ def train_single(
         congestion=True,
         trips=dict(
             type='trips_file',
+            # type='trips_file_demand',
             randomize_factor=env_randomize_factor,
         ),
         rewarding_rule='proportional',
@@ -82,7 +98,6 @@ def train_single(
 
     env = DynamicMultiAgentTransportationNetworkEnvironment(env_config, base_path=base_path)
 
-    n_steps = 512
     total_steps = n_steps * 192
 
     model = Attacker(
@@ -95,7 +110,6 @@ def train_single(
         allocator=PPOAllocator(
             env.edge_component_mapping,
             5,
-            # actor_lr=0.000005,
             actor_lr=allocator_actor_lr,
             critic_lr=allocator_critic_lr,
             gamma=allocator_gamma,
@@ -104,17 +118,30 @@ def train_single(
             value_coeff=allocator_value_coeff,
             entropy_coeff=allocator_entropy_coeff,
             n_updates=allocator_n_updates,
-            # policy_grad_clip=0.05,
-            # policy_grad_clip=None,
             policy_grad_clip=allocator_policy_grad_clip,
             batch_size=allocator_batch_size,
-            max_concentration=allocator_max_concentration,
-            # clip_range_vf=None
             clip_range_vf=allocator_clip_range_vf,
+            kl_coeff=allocator_kl_coeff,
+            normalize_advantages=allocator_normalize_advantages,
         ),
-        component=GreedyComponent(
-            env.edge_component_mapping,
-        ),
+        # allocator=ProportionalAllocator(),
+        # component=PPOComponent(
+        #     env.edge_component_mapping,
+        #     5,
+        #     actor_lr=component_actor_lr,
+        #     critic_lr=component_critic_lr,
+        #     gamma=component_gamma,
+        #     lam=component_lam,
+        #     epsilon=component_epsilon,
+        #     value_coeff=component_value_coeff,
+        #     entropy_coeff=component_entropy_coeff,
+        #     n_updates=component_n_updates,
+        #     policy_grad_clip=component_policy_grad_clip,
+        #     batch_size=component_batch_size,
+        #     max_concentration=component_max_concentration,
+        #     clip_range_vf=component_clip_range_vf,
+        # ),
+        component=GreedyComponent(env.edge_component_mapping),
     )
 
     logger.info(model)
@@ -154,8 +181,8 @@ def train_single(
             step += 1
             global_step += 1
 
-            action, allocation, budget = model.forward_single(state, deterministic=random.random() < greedy_epsilon)
-            next_state, reward, done, info = env.step(action)
+            constructed_action, action, allocation, budget = model.forward_single(state, deterministic=random.random() < greedy_epsilon)
+            next_state, reward, done, info = env.step(constructed_action)
 
             truncated = info.get("TimeLimit.truncated", False)
             original_reward = info['original_reward']
@@ -211,4 +238,7 @@ def train_single(
 
         buffer.reset()
 
-        yield dict(episode_reward=np.mean(original_reward_history[-10:]))
+        if global_step % 10000 == 0:
+            torch.save(model, f'{base_path}/logs/{run_id}/weights/Attacker_{global_step}.tar')
+
+        # yield dict(episode_reward=np.mean(original_reward_history[-10:]))

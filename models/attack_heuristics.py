@@ -82,6 +82,7 @@ class Zero(BaseHeuristic):
         # should return action, allocation, budgets
         return (
             torch.zeros((n_batch, self.n_edges), device=self.device),
+            torch.zeros((n_batch, self.n_edges), device=self.device),
             torch.zeros((n_batch, self.n_components), device=self.device),
             torch.zeros((n_batch, 1), device=self.device)
         )
