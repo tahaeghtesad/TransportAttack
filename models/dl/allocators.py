@@ -55,19 +55,21 @@ class QCritic(CustomModule):
 
         self.state_extractor = torch.nn.Sequential(
             torch.nn.Flatten(),
-            torch.nn.Linear(self.n_components * self.n_features, 64),
+            torch.nn.Linear(self.n_components * self.n_features, 128),
             # torch.nn.LayerNorm([64]),
             torch.nn.ReLU(),
         )
 
         self.action_extractor = torch.nn.Sequential(
-            torch.nn.Linear(self.n_components, 64),
+            torch.nn.Linear(self.n_components, 128),
             # torch.nn.LayerNorm([64]),
             torch.nn.ReLU(),
         )
 
         self.model = torch.nn.Sequential(
-            torch.nn.Linear(64 + 64 + 1, 1),
+            torch.nn.Linear(128 + 128 + 1, 128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128, 1),
         )
 
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
@@ -149,13 +151,16 @@ class DeterministicActor(CustomModule):
 
         self.state_extractor = torch.nn.Sequential(
             torch.nn.Flatten(),
-            torch.nn.Linear(self.n_components * self.n_features, 64),
+            torch.nn.Linear(self.n_components * self.n_features, 128),
             # torch.nn.LayerNorm([64]),
             torch.nn.ReLU(),
         )
 
         self.model = torch.nn.Sequential(
-            torch.nn.Linear(64 + 1, self.n_components),
+            torch.nn.Linear(128 + 1, 128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128, self.n_components),
+            # torch.nn.Softmax(dim=1),
             torch.nn.ReLU(),
         )
 
@@ -308,9 +313,9 @@ class DDPGAllocator(AllocatorInterface):
             'allocator/q_min': q_values.min().detach().cpu().item(),
             'allocator/q_max': q_values.max().detach().cpu().item(),
             'allocator/q_mean': q_values.mean().detach().cpu().item(),
+            'allocator/rewards': rewards.max().detach().cpu().item(),
             'allocator/a_val': -actor_loss.detach().cpu().item(),
             'allocator/r2': max(r2_score(target_q_values, q_values).detach().cpu().item(), -1),
-            'allocator/explained_variance': max(explained_variance(target_q_values, q_values).detach().cpu().item(), -1),
             'allocator/noise': self.noise.get_current_noise().detach().cpu().item(),
             'allocator/epsilon': self.epsilon.get_current_epsilon().detach().cpu().item(),
         }

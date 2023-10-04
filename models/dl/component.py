@@ -11,16 +11,18 @@ from util.torch.rl import GeneralizedAdvantageEstimation
 
 class QCritic(CustomModule):
 
-    def __init__(self, name, obs_dim, action_dim, lr) -> None:
+    def __init__(self, name, n_edges, n_features, lr) -> None:
         super().__init__(name)
         self.lr = lr
+        self.n_edges = n_edges
+        self.n_features = n_features
 
         self.model = torch.nn.Sequential(
-            torch.nn.Linear(obs_dim + action_dim + 2, 256),
+            torch.nn.Linear(n_edges * n_features + n_edges + 2, 512),
             torch.nn.ReLU(),
-            torch.nn.Linear(256, 256),
+            torch.nn.Linear(512, 512),
             torch.nn.ReLU(),
-            torch.nn.Linear(256, 1),
+            torch.nn.Linear(512, 1),
         )
 
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
@@ -31,6 +33,9 @@ class QCritic(CustomModule):
                 (torch.flatten(observation, start_dim=1), budget, allocation, action), dim=1
             )
         )
+
+    def extra_repr(self) -> str:
+        return f'n_edges={self.n_edges}, n_features={self.n_features}, lr={self.lr}'
 
 
 class VCritic(CustomModule):
@@ -64,15 +69,18 @@ class VCritic(CustomModule):
 
 class DeterministicActor(CustomModule):
 
-    def __init__(self, name, obs_dim, action_dim, lr) -> None:
+    def __init__(self, name, n_edges, n_features, lr) -> None:
         super().__init__(name)
+        self.lr = lr
+        self.n_edges = n_edges
+        self.n_features = n_features
 
         self.model = torch.nn.Sequential(
-            torch.nn.Linear(obs_dim + 2, 128),
+            torch.nn.Linear(n_edges * n_features + 2, 512),
             torch.nn.ReLU(),
-            torch.nn.Linear(128, 128),
+            torch.nn.Linear(512, 512),
             torch.nn.ReLU(),
-            torch.nn.Linear(128, action_dim),
+            torch.nn.Linear(512, n_edges),
             # torch.nn.Softmax(dim=1),
             # torch.nn.ReLU()
             torch.nn.Sigmoid()
@@ -88,6 +96,9 @@ class DeterministicActor(CustomModule):
         )
 
         return torch.nn.functional.normalize(logits, dim=1, p=1)
+
+    def extra_repr(self) -> str:
+        return f'n_edges={self.n_edges}, n_features={self.n_features}, lr={self.lr}'
 
 
 class StochasticActor(CustomModule):
@@ -148,23 +159,23 @@ class DDPGComponent(ComponentInterface):
         self.noise = noise
 
         self.critics = torch.nn.ModuleList([
-            QCritic(f'Critic-{i}', len(edge_component_mapping[i]) * n_features, len(edge_component_mapping[i]), critic_lr) for i
+            QCritic(f'Critic-{i}', len(edge_component_mapping[i]), n_features, critic_lr) for i
             in
             range(self.n_components)
         ])
         self.actors = torch.nn.ModuleList([
-            DeterministicActor(f'Actor-{i}', len(edge_component_mapping[i]) * n_features, len(edge_component_mapping[i]), actor_lr) for i
+            DeterministicActor(f'Actor-{i}', len(edge_component_mapping[i]), n_features, actor_lr) for i
             in
             range(self.n_components)
         ])
 
         self.target_critics = torch.nn.ModuleList([
-            QCritic(f'Critic-{i}', len(edge_component_mapping[i]) * n_features, len(edge_component_mapping[i]), critic_lr) for i
+            QCritic(f'Critic-{i}', len(edge_component_mapping[i]), n_features, critic_lr) for i
             in
             range(self.n_components)
         ])
         self.target_actors = torch.nn.ModuleList([
-            DeterministicActor(f'Actor-{i}', len(edge_component_mapping[i]) * n_features, len(edge_component_mapping[i]), actor_lr) for i
+            DeterministicActor(f'Actor-{i}', len(edge_component_mapping[i]), n_features, actor_lr) for i
             in
             range(self.n_components)
         ])

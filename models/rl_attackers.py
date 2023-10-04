@@ -38,11 +38,22 @@ class BaseAttacker(AttackerInterface):
     def _update(self, observation, allocations, budgets, action, reward, next_observation, done, truncateds):
         raise NotImplementedError('Should not be called in base class')
 
+    # def _aggregate_state(self, states):
+    #     aggregated = torch.empty((states.shape[0], self.n_components, 5), device=self.device)
+    #     for c in range(self.n_components):
+    #         aggregated[:, c, :] = torch.sum(
+    #             states[:, self.edge_component_mapping[c]], dim=1
+    #         )
+    #     return aggregated
+
     def _aggregate_state(self, states):
-        aggregated = torch.empty((states.shape[0], self.n_components, 5), device=self.device)
+        aggregated = torch.empty((states.shape[0], self.n_components, 2), device=self.device)
         for c in range(self.n_components):
-            aggregated[:, c, :] = torch.sum(
-                states[:, self.edge_component_mapping[c]], dim=1
+            aggregated[:, c, 0] = torch.sum(
+                states[:, self.edge_component_mapping[c], 1], dim=1
+            )
+            aggregated[:, c, 1] = torch.sum(
+                states[:, self.edge_component_mapping[c], 2], dim=1
             )
         return aggregated
 

@@ -12,11 +12,12 @@ class GaussianNoiseDecay(DecayingNoiseInterface):
         return torch.normal(0, self.get_current_noise(), shape)
 
     def get_current_noise(self):
-        return self.noise_end + (self.noise_start - self.noise_end) * torch.exp(
+        return self.end + (self.start - self.end) * torch.exp(
             -1. * self.step / self.decay)
 
     def extra_repr(self) -> str:
-        return f'start={self.noise_start:.2f}, end={self.noise_end:.2f}, decay={self.decay:.2f}'
+        return f'start={self.start:.2f}, end={self.end:.2f}, decay={self.decay:.2f}'
+
 
 class ZeroNoise(NoiseInterface):
     def __init__(self):

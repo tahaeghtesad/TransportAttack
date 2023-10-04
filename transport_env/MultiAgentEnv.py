@@ -31,7 +31,7 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
         ]  # Observation: dict(feature_vector, allocation)
 
         vehicles_in_components = [[0, 0] for _ in range(self.n_components)]
-        for t in self.trips:
+        for t in self.base_trips:
             vehicles_in_components[self.base.nodes[t.next_node]['component']][0] += t.count
             vehicles_in_components[self.base.nodes[t.next_node]['component']][1] += 1
 
@@ -168,6 +168,10 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
             reward = component_time_diff
         elif self.config['rewarding_rule'] == 'step_count':
             reward = vehicles_in_component
+        elif self.config['rewarding_rule'] == 'normalized':
+            mean = np.load(f'{self.base_path}/reward_mean_fixed.npy')
+            var = np.load(f'{self.base_path}/reward_var_fixed.npy')
+            reward = (vehicles_in_component - mean) / (var + 1e-8)
         elif self.config['rewarding_rule'] == 'proportional':
             reward = vehicles_in_component / self.max_number_of_vehicles
         elif self.config['rewarding_rule'] == 'arrived':
@@ -186,8 +190,8 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
 
         assert n_components <= self.base.number_of_nodes(), f'Number of components should be less than the number of nodes in the graph. {n_components} >= {self.base.number_of_nodes()}'
 
-        centroids = random.sample(self.base.nodes, k=n_components)
-        # centroids = [i + 1 for i in range(n_components)]
+        # centroids = random.sample(self.base.nodes, k=n_components)
+        centroids = [i + 1 for i in range(n_components)]
         for i, c in enumerate(centroids):
             self.base.nodes[c]['component'] = i
             # nx.set_node_attributes(self.base, {c: {'component': i}})

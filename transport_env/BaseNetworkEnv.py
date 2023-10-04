@@ -1,5 +1,6 @@
 import logging
 import math
+import random
 from abc import ABC
 from typing import Dict, Tuple, List
 
@@ -19,6 +20,7 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
         self.logger = logging.getLogger(__name__)
 
         self.config = config
+        self.base_path = base_path
 
         if config['network']['method'] == 'network_file':
             city = config['network']['city']
@@ -41,8 +43,7 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
 
         if self.config['trips']['type'] == 'trips_file':
             city = self.config['network']['city']
-            loaded_trips = Trip.trips_using_od_file(f'{base_path}/TransportationNetworks/{city}/{city}_trips.tntp')
-            self.trips: List[Trip] = loaded_trips
+            self.base_trips = Trip.trips_using_od_file(f'{base_path}/TransportationNetworks/{city}/{city}_trips.tntp')
         elif self.config['trips']['type'] == 'trips_file_demand':
             self.trips = Trip.using_demand_file(f'{base_path}/Sirui/traffic_data/sf_demand.txt', 'top', 10)(self.base)
         elif self.config['trips']['type'] == 'deterministic':
@@ -52,15 +53,15 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
         else:
             raise Exception(f'Unknown trip type: {self.config["trips"]["type"]}')
 
-        self.logger.info(f'Loaded {len(self.trips)}')
+        self.logger.info(f'Loaded {len(self.base_trips)}')
 
         self.time_step = 0
 
         self.initialized = False
         self.finished = False
         self.finished_previous_step = 0
-        self.max_number_of_vehicles = max([t.demand for t in self.trips])
-        self.total_number_of_vehicles = sum([t.demand for t in self.trips])
+        self.max_number_of_vehicles = max([t.demand for t in self.base_trips])
+        self.total_number_of_vehicles = sum([t.demand for t in self.base_trips])
 
         self.logger.info(f'Max Number of Vehicles: {self.max_number_of_vehicles}')
         self.logger.info(f'Total Number of Vehicles: {self.total_number_of_vehicles}')
@@ -82,6 +83,8 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
         return self.get_current_observation_edge_vector()
 
     def __reset_trips(self, randomize_factor=0):
+        # self.trips = random.choices(self.base_trips, k=int(random.random() * len(self.base_trips)))
+        self.trips = self.base_trips
         Trip.reset_trips(self.trips, randomize_factor)
 
     # Number of vehicles on edge.
@@ -160,6 +163,9 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
 
         for i, e in enumerate(self.base.edges):
             feature_vector[i][1] = on_edge[e]  # feature 1
+
+        # mean = np.array([[868.1666, 1106.823, 411.72678, 501.67432, 1162.9213]]).repeat(self.base.number_of_edges(), axis=0)
+        # var = np.array([[695.8287, 446.11535, 169.93016, 90.32494, 613.1422]]).repeat(self.base.number_of_edges(), axis=0)
 
         return feature_vector / self.max_number_of_vehicles
 

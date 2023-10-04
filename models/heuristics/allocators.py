@@ -12,7 +12,7 @@ class ProportionalAllocator(AllocatorInterface):
         # aggregated_state = (batch, n_components, 5)
 
         return torch.nn.functional.normalize(
-            aggregated_state[:, :, 2], p=1, dim=1
+            aggregated_state[:, :, 1], p=1, dim=1
         )
 
     # def get_state_dict(self):
