@@ -42,7 +42,7 @@ def train_single(config):
     base_path = '.'
 
     # run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")}'
-    run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")}-{param["budget"]}-{param["city"]}-{param["model_name"]}'
+    run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")}-{config["budget"]}-{config["city"]}-{config["model_name"]}'
     # run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")},erf={env_randomize_factor:.5f},a_lr={allocator_actor_lr:.5f},c_lr={allocator_critic_lr:.5f},a_g={allocator_gamma:.5f},a_l={allocator_lam:.5f},a_e={allocator_epsilon:.5f},a_ec={allocator_entropy_coeff:.5f},a_vc={allocator_value_coeff:.5f},a_nu={allocator_n_updates},a_pgc={allocator_policy_grad_clip},a_bs={allocator_batch_size},a_crv={allocator_clip_range_vf},ge={greedy_epsilon:.5f}'
     # run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")},c_lr={critic_lr:.5f},a_lr={actor_lr:.5f},t={tau:.5f},dl={decay_length},ut={update_time}'
     writer = tb.SummaryWriter(f'{base_path}/logs/{run_id}')
@@ -274,27 +274,101 @@ def train_single(config):
     # writer.add_hparams(config, metric_dict={'reward': np.mean(original_reward_history[-10:])})
     torch.save(model, f'{base_path}/logs/{run_id}/weights/Attacker_final.tar')
 
-    return np.mean(original_reward_history[-10:])
+    return run_id, np.mean(original_reward_history[-10:])
 
 
 if __name__ == '__main__':
+
     # train_single(
     #     {
     #         'seed': 0,
     #         'log_stdout': True,
+    #         'model_name': 'FixedBudgetNetworkedWideDDPG',
     #         'city': 'SiouxFalls',
     #         'horizon': 400,
     #         'randomize_factor': 0.01,
     #         'budget': 30,
     #         'n_components': 4,
     #         'n_steps': 1024,
-    #         'n_epochs': 400,
+    #         'n_epochs': 1,
     #         'update_time': 1,
-    #         'critic_lr': 0.01,
-    #         'actor_lr': 0.00000005,
+    #         'critic_lr': 0.001,
+    #         'actor_lr': 0.00001,
     #         'gamma': 0.99,
     #         'tau': 0.001,
-    #         'decay_length': 10_000
+    #         'decay_length': 30_000
+    #     }
+    # )
+    #
+    # train_single(
+    #     {
+    #         'seed': 0,
+    #         'log_stdout': True,
+    #         'city': 'EMA',
+    #         'horizon': 400,
+    #         'model_name': 'FixedBudgetDDPGAllocatorDDPGComponent',
+    #         'randomize_factor': 0.01,
+    #         'budget': 30,
+    #         'n_components': 4,
+    #         'n_steps': 1024,
+    #         'n_epochs': 1,
+    #         'update_time': 1,
+    #         'allocator/n_features': 2,
+    #         'allocator/critic_lr': 0.001,
+    #         'allocator/actor_lr': 0.00001,
+    #         'allocator/gamma': 0.99,
+    #         'allocator/tau': 0.001,
+    #         'allocator/decay_length': 30_000,
+    #         'component/n_features': 5,
+    #         'component/critic_lr': 0.001,
+    #         'component/actor_lr': 0.00001,
+    #         'component/gamma': 0.99,
+    #         'component/tau': 0.001,
+    #         'component/decay_length': 10_000,
+    #     }
+    # )
+    #
+    # train_single(
+    #     {
+    #         'seed': 0,
+    #         'log_stdout': True,
+    #         'city': 'EMA',
+    #         'horizon': 400,
+    #         'model_name': 'FixedBudgetProportionalAllocatorDDPGComponent',
+    #         'randomize_factor': 0.01,
+    #         'budget': 30,
+    #         'n_components': 4,
+    #         'n_steps': 1024,
+    #         'n_epochs': 1,
+    #         'update_time': 1,
+    #         'component/n_features': 5,
+    #         'component/critic_lr': 0.001,
+    #         'component/actor_lr': 0.005,
+    #         'component/gamma': 0.99,
+    #         'component/tau': 0.001,
+    #         'component/decay_length': 10_000,
+    #     }
+    # )
+    #
+    # train_single(
+    #     {
+    #         'seed': 0,
+    #         'model_name': 'FixedBudgetDDPGAllocatorGreedyComponent',
+    #         'log_stdout': True,
+    #         'city': 'EMA',
+    #         'horizon': 400,
+    #         'randomize_factor': 0.01,
+    #         'budget': 30,
+    #         'n_components': 4,
+    #         'n_steps': 1024,
+    #         'n_epochs': 1,
+    #         'update_time': 1,
+    #         'allocator/n_features': 2,
+    #         'allocator/critic_lr': 0.01,
+    #         'allocator/actor_lr': 0.0001,
+    #         'allocator/gamma': 0.99,
+    #         'allocator/tau': 0.001,
+    #         'allocator/decay_length': 10_000,
     #     }
     # )
 
@@ -428,6 +502,6 @@ if __name__ == '__main__':
     writer = tb.SummaryWriter('logs/hparam_search')
 
     with Pool(8) as pool:
-        for param, reward in zip(parameters, tqdm(pool.imap(exception_wrapper, parameters), total=len(parameters))):
+        for param, (run_id, reward) in zip(parameters, tqdm(pool.imap(exception_wrapper, parameters), total=len(parameters))):
             writer.add_hparams(param, metric_dict={'reward': reward},
-                               run_name=f'{datetime.now().strftime("%Y%m%d%H%M%S%f")}-{param["budget"]-param["city"]-param["model_name"]}')
+                               run_name=run_id)
