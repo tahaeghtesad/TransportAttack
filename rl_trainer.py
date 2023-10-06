@@ -29,7 +29,7 @@ def exception_wrapper(config):
     try:
         return train_single(config)
     except:
-        return 0.0
+        return f'failed_{datetime.now().strftime("%Y%m%d%H%M%S%f")}', 0.0
 
 
 def train_single(config):
