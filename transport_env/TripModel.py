@@ -82,7 +82,7 @@ class Trip:
             trip.progress = 0
             trip.time_to_next = 0
             trip.edge_time = 0
-            trip.count = int(trip.demand * (1 - randomize_factor + 2 * randomize_factor * random.random()))
+            trip.count = max(0, int(trip.demand * (1 - randomize_factor + 2 * randomize_factor * random.random())))
 
     @staticmethod
     def get_trips(srcdest):
@@ -108,18 +108,19 @@ class Trip:
     def from_matrix(matrix):
         trips = list()
         for i, (source, dest, demand) in enumerate(matrix):
-            trips.append(
-                Trip(
-                    number=i,
-                    start=int(source),
-                    destination=int(dest),
-                    progress=0,
-                    prev_node=None,
-                    next_node=int(source),
-                    time_to_next=0,
-                    edge_time=0,
-                    demand=int(demand),
-                    count=int(demand)
+            if demand > 0:
+                trips.append(
+                    Trip(
+                        number=i,
+                        start=int(source),
+                        destination=int(dest),
+                        progress=0,
+                        prev_node=None,
+                        next_node=int(source),
+                        time_to_next=0,
+                        edge_time=0,
+                        demand=int(demand),
+                        count=int(demand)
+                    )
                 )
-            )
         return trips

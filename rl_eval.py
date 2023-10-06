@@ -15,7 +15,7 @@ from models.heuristics.budgeting import FixedBudgeting
 from models.heuristics.component import GreedyComponent
 from models.rl_attackers import FixedBudgetNetworkedWideGreedy, Attacker
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
-from util.graphing import create_box_plot
+from util.graphing import create_box_plot, create_bar_plot
 
 if __name__ == '__main__':
     run_id = f'{datetime.now().strftime("%Y%m%d-%H%M%S")}'
@@ -41,14 +41,14 @@ if __name__ == '__main__':
             num_sample=20,
             render_mode=None,
             reward_multiplier=1.0,
-            congestion=False,
+            congestion=True,
             trips=dict(
                 type='trips_file',
-                randomize_factor=0.001,
+                randomize_factor=0.05,
             ),
             # rewarding_rule='proportional',
             rewarding_rule='step_count',
-            n_components=6,
+            n_components=4,
         )
     )
 
@@ -58,9 +58,6 @@ if __name__ == '__main__':
 
     device = torch.device('cpu')
     logger.info(device)
-
-    fixed_budget_ddpg_allocator_greedy_component: Attacker = torch.load('logs/good_20231003161323458738/weights/Attacker_89000.tar')
-    fixed_budget_proportional_allocator_ddpg_component: Attacker = torch.load('logs/20231003164033332819/weights/Attacker_130000.tar')
 
     models = [
         Zero(env.edge_component_mapping),
@@ -72,11 +69,14 @@ if __name__ == '__main__':
             ProportionalAllocator(),
             GreedyComponent(env.edge_component_mapping)
         ),
-        fixed_budget_ddpg_allocator_greedy_component,
-        fixed_budget_proportional_allocator_ddpg_component,
+        torch.load('report_weights/30_budget_ddpg.tar'),
+        torch.load('report_weights/30_budget_ddpg_allocator_greedy_component.tar'),
+        torch.load('report_weights/30_budget_proportional_allocator_ddpg_component.tar'),
+        torch.load('report_weights/30_budget'
+                   '_ddpg_allocator_maddpg_component.tar')
     ]
     logger.info(models)
-    num_episodes = 10
+    num_episodes = 50
 
     model_rewards = {}
 
@@ -117,12 +117,16 @@ if __name__ == '__main__':
         # np.save('reward_mean.npy', np.array(reward_history).mean(axis=0))
         # np.save('reward_var.npy', np.array(reward_history).var(axis=0))
 
+    # data = np.array([np.mean(value) for key, value in model_rewards.items()])
+    # base = data[0]
+    # data = (data[1:] - base) / base * 100
+
     create_box_plot(
         np.array([model_rewards[model] for model in models]),
-        'Strategy Rewards',
+        'Ablation Study',
         'Strategy',
         [model.name for model in models],
-        'Reward',
+        'Total Travel Time',
         None,
         True,
     )

@@ -17,10 +17,11 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
         self.logger = logging.getLogger(__name__)
 
         self.n_components = config['n_components']
-        self.partition_graph(self.n_components, n_repeat=500)
+        self.metrics = self.partition_graph(self.n_components, n_repeat=500)
         self.edge_component_mapping = self.__get_edge_component_mapping()
 
         self.logger.info(f'Components: {[len(self.edge_component_mapping[comp]) for comp in range(self.n_components)]}')
+        self.logger.info(f'Component metrics: {self.metrics}')
 
         self.action_space = [
             gym.spaces.Box(low=0.0, high=1.0, shape=(len(self.edge_component_mapping[comp]),)) for comp in range(self.n_components)
@@ -190,18 +191,19 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
 
         assert n_components <= self.base.number_of_nodes(), f'Number of components should be less than the number of nodes in the graph. {n_components} >= {self.base.number_of_nodes()}'
 
-        # centroids = random.sample(self.base.nodes, k=n_components)
-        centroids = [i + 1 for i in range(n_components)]
-        for i, c in enumerate(centroids):
-            self.base.nodes[c]['component'] = i
-            # nx.set_node_attributes(self.base, {c: {'component': i}})
-
         all_pairs_distance = dict(nx.all_pairs_dijkstra(
             self.base,
             weight=lambda u, v, _: np.maximum(0, self.base.edges[(u, v)]['free_flow_time'])
         ))  # A dict with key being the 'source_node' and value is (distance, path)
 
         self.logger.info(f'Partitioning graph into {n_components} components. Repeat: {n_repeat}')
+
+        centroids = random.sample(self.base.nodes, k=n_components)
+        # centroids = [i + 1 for i in range(n_components)]
+        for i, c in enumerate(centroids):
+            self.base.nodes[c]['component'] = i
+            # nx.set_node_attributes(self.base, {c: {'component': i}})
+
         for _ in range(n_repeat):  # _ is the K-Means clustering algorithm.
 
             for node in self.base:  # Assigning each node to its closest centroid
@@ -228,6 +230,31 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
         for e in self.base.edges:
             self.base.edges[e]['component'] = self.base.nodes[e[0]]['component']
 
+        # Calculating metrics:
+        sizes = [0 for _ in range(n_components)]
+        radius = [0 for _ in range(self.n_components)]
+        vehicle_in_comp = [0 for _ in range(self.n_components)]
+        for comp in range(self.n_components):
+            distances = []
+            for source in self.base.nodes:
+                if self.base.nodes[source]['component'] == comp:
+                    sizes[comp] += 1
+                    for destination in self.base.nodes:
+                        if self.base.nodes[destination]['component'] == comp:
+                            distances.append(all_pairs_distance[source][0][destination])
+            radius[comp] = np.max(distances)
+        for t in self.base_trips:
+            vehicle_in_comp[self.base.nodes[t.start]['component']] += t.count
+
+        return dict(
+            component_size_mean=np.mean(sizes),
+            component_size_std=np.std(sizes),
+            component_radius_mean=np.mean(radius),
+            component_radius_std=np.std(radius),
+            vehicle_in_comp_mean=np.mean(vehicle_in_comp),
+            vehicle_in_comp_std=np.std(vehicle_in_comp),
+        )
+
     def get_travel_times_assuming_the_attack(self, action):
         action = np.maximum(action, 0)
 
@@ -239,10 +266,12 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
 
         return [self.get_travel_time(u, v, on_edge[(u, v)]) + perturbed[(u, v)] for u, v in self.base.edges]
 
-    def show_base_graph(self):
+    def show_base_graph(self, title=None):
         pos = nx.spectral_layout(self.base)
 
         fig, ax = plt.subplots()
+        if title is not None:
+            fig.suptitle(title)
 
         fig.set_figheight(25)
         fig.set_figwidth(25)
@@ -259,7 +288,6 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
         colors = [
             "#FF0000",  # Red
             "#FFA500",  # Orange
-            "#FFFF00",  # Yellow
             "#008000",  # Green
             "#0000FF",  # Blue
             "#4B0082",  # Indigo
@@ -268,6 +296,7 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
             "#FFC0CB",  # Pink
             "#FF00FF",  # Magenta
             "#00FFFF",  # Cyan
+            "#FFFF00",  # Yellow
             "#40E0D0",  # Turquoise
             "#00FF00",  # Lime
             "#808000",  # Olive

@@ -16,6 +16,7 @@ def create_box_plot(
         show=False,
 ):
     fig, ax = plt.subplots()
+    fig.set_figheight(8)
     ax.spines[['bottom', 'top']].set_visible(False)
     ax.boxplot(data.T)
     ax.set_title(title)
@@ -23,11 +24,40 @@ def create_box_plot(
     ax.set_xticks(
         ticks=np.arange(len(x_ticks)) + 1,
         labels=x_ticks,
-        rotation=10,
+        rotation=20,
         rotation_mode='anchor',
     )
     ax.yaxis.grid(True)
     ax.yaxis.grid(True, which='minor', linestyle='--')
+    ax.set_ylabel(y_label)
+    __save(save_path)
+    if show:
+        plt.show()
+    plt.clf()
+
+
+def create_bar_plot(
+    data: np.ndarray,
+    title: str,
+    x_label: str,
+    x_ticks: list[str],
+    y_label: str,
+    save_path: str | None,
+    show=False,
+):
+    fig, ax = plt.subplots()
+    # ax.spines[['bottom', 'top']].set_visible(False)
+    ax.bar(np.arange(len(data)), data)
+    ax.set_title(title)
+    ax.set_xlabel(x_label)
+    ax.set_xticks(
+        ticks=np.arange(len(x_ticks)),
+        labels=x_ticks,
+        rotation=20,
+        rotation_mode='anchor',
+    )
+    # ax.yaxis.grid(True)
+    # ax.yaxis.grid(True, which='minor', linestyle='--')
     ax.set_ylabel(y_label)
     __save(save_path)
     if show:

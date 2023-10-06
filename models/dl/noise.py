@@ -9,7 +9,7 @@ class GaussianNoiseDecay(DecayingNoiseInterface):
 
     def forward(self, shape):
         self.step += 1
-        return torch.normal(0, self.get_current_noise(), shape)
+        return torch.normal(0, self.get_current_noise(), shape, device=self.device)
 
     def get_current_noise(self):
         return self.end + (self.start - self.end) * torch.exp(
@@ -24,10 +24,10 @@ class ZeroNoise(NoiseInterface):
         super().__init__('ZeroNoise')
 
     def forward(self, shape):
-        return torch.zeros(shape)
+        return torch.zeros(shape, device=self.device)
 
     def get_current_noise(self):
-        return torch.tensor(0.0)
+        return torch.tensor(0.0, device=self.device)
 
 
 class OUActionNoise(DecayingNoiseInterface):
@@ -35,8 +35,8 @@ class OUActionNoise(DecayingNoiseInterface):
     def __init__(self, mean, std_deviation, target_scale, decay, theta=0.15, dt=1e-2, x_initial=None):
         super().__init__('OUActionNoise', 1.0, target_scale, decay)
         self.theta = theta
-        self.mean = torch.tensor(mean, dtype=torch.float32)
-        self.std_dev = torch.tensor(std_deviation, dtype=torch.float32)
+        self.mean = torch.tensor(mean, dtype=torch.float32, device=self.device)
+        self.std_dev = torch.tensor(std_deviation, dtype=torch.float32, device=self.device)
         self.dt = torch.tensor(dt)
         self.x_initial = x_initial
         self.x_prev = None
@@ -50,7 +50,7 @@ class OUActionNoise(DecayingNoiseInterface):
         x = (
             self.x_prev
             + self.theta * (self.mean - self.x_prev) * self.dt
-            + self.std_dev * torch.sqrt(self.dt) * torch.normal(mean=0.0, std=1.0, size=shape)
+            + self.std_dev * torch.sqrt(self.dt) * torch.normal(mean=0.0, std=1.0, size=shape, device=self.device)
         )
         # Store x into x_prev
         # Makes next noise dependent on current one
@@ -67,7 +67,7 @@ class OUActionNoise(DecayingNoiseInterface):
         if self.x_initial is not None:
             self.x_prev = self.x_initial
         else:
-            self.x_prev = torch.tensor(0.0)
+            self.x_prev = torch.tensor(0.0, device=self.device)
 
     def get_current_noise(self):
         return self.scale * self.std_dev
