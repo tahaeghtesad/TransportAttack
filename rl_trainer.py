@@ -379,7 +379,7 @@ if __name__ == '__main__':
     for critic_lr in [0.01, 0.001, 0.005]:
         for actor_lr in [0.001, 0.001, 0.005, 0.0005, 0.00005]:
             for decay_length in [10_000, 30_000]:
-                for n_components in [4, 6, 8, 10]:
+                for n_components in [15]:
                     for budget in [5, 10, 15, 30]:
                         for seed in range(2):
                             parameters.append({
