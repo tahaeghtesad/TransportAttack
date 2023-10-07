@@ -380,7 +380,7 @@ if __name__ == '__main__':
         for actor_lr in [0.001, 0.001, 0.005, 0.0005, 0.00005]:
             for decay_length in [10_000, 30_000]:
                 for n_components in [4, 6, 8, 10]:
-                    for budget in [5, 15]:
+                    for budget in [5, 10, 15, 30]:
                         for seed in range(2):
                             parameters.append({
                                 'seed': seed,
@@ -392,7 +392,7 @@ if __name__ == '__main__':
                                 'budget': budget,
                                 'n_components': n_components,
                                 'n_steps': 1024,
-                                'n_epochs': 100,
+                                'n_epochs': 50,
                                 'update_time': 1,
                                 'allocator/n_features': 2,
                                 'allocator/critic_lr': critic_lr,
@@ -404,10 +404,10 @@ if __name__ == '__main__':
 
     # Low-Level Runs
 
-    for critic_lr in [0.01]:
+    for critic_lr in [0.01, 0.001]:
         for actor_lr in [0.00005]:
             for decay_length in [10_000]:
-                for n_components in [4, 6, 8, 10]:
+                for n_components in [15]:
                     for budget in [5, 10, 15, 30]:
                         for seed in range(2):
                             parameters.append({
@@ -420,7 +420,7 @@ if __name__ == '__main__':
                                 'budget': budget,
                                 'n_components': n_components,
                                 'n_steps': 1024,
-                                'n_epochs': 200,
+                                'n_epochs': 100,
                                 'update_time': 1,
                                 'component/n_features': 5,
                                 'component/critic_lr': critic_lr,
@@ -440,9 +440,9 @@ if __name__ == '__main__':
                         for c_critic_lr in [0.01, 0.001]:
                             for c_actor_lr in [0.001, 0.0001]:
                                 for c_gamma in [0.9, 0.99]:
-                                    for n_components in [4, 6, 8, 10]:
+                                    for n_components in [15]:
                                         for c_decay_length in [10_000, 50_000]:
-                                            for seed in range(2):
+                                            for seed in range(1):
                                                 parameters.append({
                                                     'seed': seed,
                                                     'log_stdout': False,
@@ -453,7 +453,7 @@ if __name__ == '__main__':
                                                     'budget': budget,
                                                     'n_components': n_components,
                                                     'n_steps': 1024,
-                                                    'n_epochs': 300,
+                                                    'n_epochs': 100,
                                                     'update_time': 1,
                                                     'allocator/n_features': 2,
                                                     'allocator/critic_lr': a_critic_lr,
@@ -475,7 +475,7 @@ if __name__ == '__main__':
         for actor_lr in [0.0005, 0.00005]:
             for gamma in [0.99, 0.9]:
                 for budget in [5, 10, 15, 30]:
-                    for seed in range(2):
+                    for seed in range(1):
                         parameters.append({
                             'seed': seed,
                             'log_stdout': False,
@@ -486,7 +486,7 @@ if __name__ == '__main__':
                             'budget': budget,
                             'n_components': 4,
                             'n_steps': 1024,
-                            'n_epochs': 100,
+                            'n_epochs': 40,
                             'update_time': 1,
                             'critic_lr': critic_lr,
                             'actor_lr': actor_lr,
@@ -501,7 +501,7 @@ if __name__ == '__main__':
 
     writer = tb.SummaryWriter('logs/hparam_search')
 
-    with Pool(8) as pool:
+    with Pool(64) as pool:
         for param, (run_id, reward) in zip(parameters, tqdm(pool.imap(exception_wrapper, parameters), total=len(parameters))):
             writer.add_hparams(param, metric_dict={'reward': reward},
                                run_name=run_id)
