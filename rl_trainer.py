@@ -33,7 +33,7 @@ def exception_wrapper(config):
 
 
 def train_single(config):
-    time.sleep(random.randint(1, 10))
+    time.sleep(random.random() * 10)
     model_name = config['model_name']
 
     random.seed(config['seed'])
@@ -385,7 +385,7 @@ if __name__ == '__main__':
                             parameters.append({
                                 'seed': seed,
                                 'model_name': 'FixedBudgetDDPGAllocatorGreedyComponent',
-                                'log_stdout': False,
+                                'log_stdout': True,
                                 'city': 'EMA',
                                 'horizon': 400,
                                 'randomize_factor': 0.01,
@@ -501,7 +501,7 @@ if __name__ == '__main__':
 
     writer = tb.SummaryWriter('logs/hparam_search')
 
-    with Pool(32) as pool:
+    with Pool(128) as pool:
         for param, (run_id, reward) in zip(parameters, tqdm(pool.imap(exception_wrapper, parameters), total=len(parameters))):
             writer.add_hparams(param, metric_dict={'reward': reward},
                                run_name=run_id)
