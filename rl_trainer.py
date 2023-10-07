@@ -33,7 +33,7 @@ def exception_wrapper(config):
 
 
 def train_single(config):
-    time.sleep(config['seed'])
+    time.sleep(random.randint(1, 10))
     model_name = config['model_name']
 
     random.seed(config['seed'])
@@ -501,7 +501,7 @@ if __name__ == '__main__':
 
     writer = tb.SummaryWriter('logs/hparam_search')
 
-    with Pool(64) as pool:
+    with Pool(32) as pool:
         for param, (run_id, reward) in zip(parameters, tqdm(pool.imap(exception_wrapper, parameters), total=len(parameters))):
             writer.add_hparams(param, metric_dict={'reward': reward},
                                run_name=run_id)
