@@ -17,6 +17,7 @@ def create_box_plot(
 ):
     fig, ax = plt.subplots()
     fig.set_figheight(8)
+    fig.set_figwidth(12)
     ax.spines[['bottom', 'top']].set_visible(False)
     ax.boxplot(data.T)
     ax.set_title(title)

@@ -11,7 +11,7 @@ class FixedBudgeting(BudgetingInterface):
         self.noise = noise
 
     def forward(self, aggregated_state, deterministic):
-        budget = torch.ones(aggregated_state.shape[0], 1, device=self.device) * self.budget * torch.gt(torch.sum(aggregated_state[:, :, 0], dim=1, keepdim=True), 0)
+        budget = torch.ones(aggregated_state.shape[0], 1, device=self.device) * self.budget * torch.gt(torch.sum(aggregated_state[:, :, 1], dim=1, keepdim=True), 0)
         if not deterministic:
             return torch.maximum(budget + self.noise(budget.shape), torch.zeros_like(budget, device=self.device))
         else:

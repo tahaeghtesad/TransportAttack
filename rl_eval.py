@@ -1,5 +1,6 @@
 import logging
 import logging
+import os
 import random
 import sys
 from datetime import datetime
@@ -59,74 +60,80 @@ if __name__ == '__main__':
     device = torch.device('cpu')
     logger.info(device)
 
-    models = [
-        Zero(env.edge_component_mapping),
-        FixedBudgetNetworkedWideGreedy(env.edge_component_mapping, 30, ZeroNoise()),
-        Attacker(
-            'FixedBudgetProportionalAllocationGreedyComponent',
-            env.edge_component_mapping,
-            FixedBudgeting(30, ZeroNoise()),
-            ProportionalAllocator(),
-            GreedyComponent(env.edge_component_mapping)
-        ),
-        torch.load('report_weights/30_budget_ddpg.tar'),
-        torch.load('report_weights/30_budget_ddpg_allocator_greedy_component.tar'),
-        torch.load('report_weights/30_budget_proportional_allocator_ddpg_component.tar'),
-        torch.load('report_weights/30_budget'
-                   '_ddpg_allocator_maddpg_component.tar')
-    ]
-    logger.info(models)
-    num_episodes = 50
+    for _budget in [10]:
 
-    model_rewards = {}
+        models = [
+            Zero(env.edge_component_mapping),
+            FixedBudgetNetworkedWideGreedy(env.edge_component_mapping, _budget, ZeroNoise()),
+            Attacker(
+                'FixedBudgetProportionalAllocationGreedyComponent',
+                env.edge_component_mapping,
+                FixedBudgeting(_budget, ZeroNoise()),
+                ProportionalAllocator(),
+                GreedyComponent(env.edge_component_mapping)
+            ),
+            torch.load(f'report_weights/{_budget}_ddpg.tar'),
+            # torch.load(f'report_weights/{_budget}_low_level.tar'),
+            torch.load(f'report_weights/Attacker_final.tar'),
+            torch.load(f'report_weights/{_budget}_high_level.tar'),
+            torch.load(f'report_weights/{_budget}_hierarchical.tar'),
+        ]
 
-    for model in models:
-        rewards = []
+        names = ['Zero', 'Greedy', 'Heuristic Hierarchical', 'DDPG', 'Low Level', 'High Level', 'Hierarchical']
 
-        observation_history = []
-        reward_history = []
+        logger.info(len(models))
+        num_episodes = 50
 
-        for episode in tqdm(range(num_episodes), desc=f'Evaluating {model.name}'):
+        model_rewards = {}
 
-            o = env.reset()
-            done = False
-            truncated = False
-            reward = 0
-            episode_reward = 0
-            while not done and not truncated:
-                constructed_action, action, allocation, budget = model.forward_single(o, deterministic=False)
+        for model in models:
+            rewards = []
 
-                observation_history.append(o)
+            observation_history = []
+            reward_history = []
 
-                no, r, done, i = env.step(constructed_action)
+            for episode in tqdm(range(num_episodes), desc=f'Evaluating {model.name}'):
 
-                reward_history.append(r)
+                o = env.reset()
+                done = False
+                truncated = False
+                reward = 0
+                episode_reward = 0
+                while not done and not truncated:
+                    constructed_action, action, allocation, budget = model.forward_single(o, deterministic=False)
 
-                truncated = i.get("TimeLimit.truncated", False)
-                original_reward = i['original_reward']
-                o = no
-                episode_reward += original_reward
+                    observation_history.append(o)
 
-            rewards.append(episode_reward)
+                    no, r, done, i = env.step(constructed_action)
 
-        model_rewards[model] = rewards
-        # print(np.array(observation_history).mean(axis=(0, 1)))
-        # print(np.array(observation_history).var(axis=(0, 1)))
-        # np.save('observation_mean.npy', np.array(observation_history).mean(axis=0))
-        # np.save('observation_var.npy', np.array(observation_history).var(axis=0))
-        # np.save('reward_mean.npy', np.array(reward_history).mean(axis=0))
-        # np.save('reward_var.npy', np.array(reward_history).var(axis=0))
+                    reward_history.append(r)
 
-    # data = np.array([np.mean(value) for key, value in model_rewards.items()])
-    # base = data[0]
-    # data = (data[1:] - base) / base * 100
+                    truncated = i.get("TimeLimit.truncated", False)
+                    original_reward = i['original_reward']
+                    o = no
+                    episode_reward += original_reward
 
-    create_box_plot(
-        np.array([model_rewards[model] for model in models]),
-        'Ablation Study',
-        'Strategy',
-        [model.name for model in models],
-        'Total Travel Time',
-        None,
-        True,
-    )
+                rewards.append(episode_reward)
+
+            model_rewards[model] = rewards
+            # print(np.array(observation_history).mean(axis=(0, 1)))
+            # print(np.array(observation_history).var(axis=(0, 1)))
+            # np.save('observation_mean.npy', np.array(observation_history).mean(axis=0))
+            # np.save('observation_var.npy', np.array(observation_history).var(axis=0))
+            # np.save('reward_mean.npy', np.array(reward_history).mean(axis=0))
+            # np.save('reward_var.npy', np.array(reward_history).var(axis=0))
+
+        # data = np.array([np.mean(value) for key, value in model_rewards.items()])
+        # base = data[0]
+        # data = (data[1:] - base) / base * 100
+
+        create_box_plot(
+            np.array([model_rewards[model] for model in models]),
+            f'SiouxFalls - {_budget} Budget',
+            'Strategy',
+            # [model.name for model in models],
+            names,
+            'Total Travel Time',
+            f'/Users/txe5135/Desktop/budget-{_budget}.png',
+            False,
+        )
