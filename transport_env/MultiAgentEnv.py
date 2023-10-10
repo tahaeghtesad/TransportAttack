@@ -198,8 +198,8 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
 
         self.logger.info(f'Partitioning graph into {n_components} components. Repeat: {n_repeat}')
 
-        centroids = random.sample(self.base.nodes, k=n_components)
-        # centroids = [i + 1 for i in range(n_components)]
+        # centroids = random.sample(self.base.nodes, k=n_components)
+        centroids = [i + 1 for i in range(n_components)]
         for i, c in enumerate(centroids):
             self.base.nodes[c]['component'] = i
             # nx.set_node_attributes(self.base, {c: {'component': i}})

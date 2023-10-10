@@ -28,7 +28,7 @@ from util.rl.experience_replay import ExperienceReplay
 def exception_wrapper(config):
     try:
         return train_single(config)
-    except:
+    except Exception as e:
         return f'failed_{datetime.now().strftime("%Y%m%d%H%M%S%f")}', 0.0
 
 
@@ -65,8 +65,9 @@ def train_single(config):
 
     env_config = dict(
         network=dict(
-            method='network_file',
-            city=config['city'],
+            method='edge_list',
+            file='Generated/GRE-6x8-20231009151840948002.edgelist',
+            city='SiouxFalls',
         ),
         horizon=config['horizon'],
         num_sample=20,
@@ -270,14 +271,9 @@ def train_single(config):
                     else:
                         writer.add_scalar(name, value, global_step)
 
-            # buffer.reset()
-
-        # yield dict(episode_reward=np.mean(original_reward_history[-10:]))
-
-    # writer.add_hparams(config, metric_dict={'reward': np.mean(original_reward_history[-10:])})
     torch.save(model, f'{base_path}/logs/{run_id}/weights/Attacker_final.tar')
 
-    return run_id, np.mean(original_reward_history[-10:])
+    return run_id, best_episode_reward
 
 
 if __name__ == '__main__':
@@ -377,61 +373,69 @@ if __name__ == '__main__':
 
     parameters = []
 
+    budgets = [60, 90, 120, 150]
+    seeds = range(2)
+    n_components = [6]
+    horizon = 200
+    n_steps = 1024
+    n_epochs = 30
+    randomize_factor = 0.01
+
     # High-Level Runs
 
-    # for critic_lr in [0.01]:
-    #     for actor_lr in [0.00005]:
-    #         for decay_length in [10_000]:
-    #             for n_components in [4]:
-    #                 for budget in [5, 10, 15]:
-    #                     for seed in range(2):
-    #                         parameters.append({
-    #                             'seed': seed,
-    #                             'model_name': 'FixedBudgetDDPGAllocatorGreedyComponent',
-    #                             'log_stdout': True,
-    #                             'city': 'SiouxFalls',
-    #                             'horizon': 400,
-    #                             'randomize_factor': 0.01,
-    #                             'budget': budget,
-    #                             'n_components': n_components,
-    #                             'n_steps': 1024,
-    #                             'n_epochs': 30,
-    #                             'update_time': 1,
-    #                             'allocator/n_features': 2,
-    #                             'allocator/critic_lr': critic_lr,
-    #                             'allocator/actor_lr': actor_lr,
-    #                             'allocator/gamma': 0.99,
-    #                             'allocator/tau': 0.001,
-    #                             'allocator/decay_length': decay_length,
-    #                         })
+    for critic_lr in [0.01]:
+        for actor_lr in [0.00005]:
+            for decay_length in [10_000]:
+                for n_component in n_components:
+                    for budget in budgets:
+                        for seed in seeds:
+                            parameters.append({
+                                'seed': seed,
+                                'model_name': 'FixedBudgetDDPGAllocatorGreedyComponent',
+                                'log_stdout': True,
+                                'city': 'SiouxFalls',
+                                'horizon': horizon,
+                                'randomize_factor': randomize_factor,
+                                'budget': budget,
+                                'n_components': n_component,
+                                'n_steps': n_steps,
+                                'n_epochs': n_epochs,
+                                'update_time': 1,
+                                'allocator/n_features': 2,
+                                'allocator/critic_lr': critic_lr,
+                                'allocator/actor_lr': actor_lr,
+                                'allocator/gamma': 0.99,
+                                'allocator/tau': 0.001,
+                                'allocator/decay_length': decay_length,
+                            })
     #
     # # Low-Level Runs
     #
-    # for critic_lr in [0.01]:
-    #     for actor_lr in [0.00005]:
-    #         for decay_length in [10_000]:
-    #             for n_components in [4]:
-    #                 for budget in [5, 10, 15]:
-    #                     for seed in range(2):
-    #                         parameters.append({
-    #                             'seed': seed,
-    #                             'log_stdout': False,
-    #                             'city': 'SiouxFalls',
-    #                             'horizon': 400,
-    #                             'model_name': 'FixedBudgetProportionalAllocatorDDPGComponent',
-    #                             'randomize_factor': 0.01,
-    #                             'budget': budget,
-    #                             'n_components': n_components,
-    #                             'n_steps': 1024,
-    #                             'n_epochs': 30,
-    #                             'update_time': 1,
-    #                             'component/n_features': 5,
-    #                             'component/critic_lr': critic_lr,
-    #                             'component/actor_lr': actor_lr,
-    #                             'component/gamma': 0.99,
-    #                             'component/tau': 0.001,
-    #                             'component/decay_length': decay_length,
-    #                         })
+    for critic_lr in [0.01]:
+        for actor_lr in [0.00005]:
+            for decay_length in [10_000]:
+                for n_component in n_components:
+                    for budget in budgets:
+                        for seed in seeds:
+                            parameters.append({
+                                'seed': seed,
+                                'log_stdout': False,
+                                'city': 'SiouxFalls',
+                                'horizon': horizon,
+                                'model_name': 'FixedBudgetProportionalAllocatorDDPGComponent',
+                                'randomize_factor': 0.01,
+                                'budget': budget,
+                                'n_components': n_component,
+                                'n_steps': n_steps,
+                                'n_epochs': n_epochs * 2,
+                                'update_time': 1,
+                                'component/n_features': 5,
+                                'component/critic_lr': critic_lr,
+                                'component/actor_lr': actor_lr,
+                                'component/gamma': 0.99,
+                                'component/tau': 0.001,
+                                'component/decay_length': decay_length,
+                            })
 
     # Run HMADDPG
 
@@ -439,24 +443,24 @@ if __name__ == '__main__':
         for a_actor_lr in [0.00001]:
             for a_decay_length in [50_000]:
                 for a_gamma in [0.99]:
-                    for budget in [10, 15]:
+                    for budget in budgets:
                         for c_critic_lr in [0.01]:
                             for c_actor_lr in [0.00001]:
                                 for c_gamma in [0.9]:
-                                    for n_components in [4]:
+                                    for n_component in n_components:
                                         for c_decay_length in [10_000]:
-                                            for seed in range(4):
+                                            for seed in range(1, 3):
                                                 parameters.append({
                                                     'seed': seed,
-                                                    'log_stdout': False,
+                                                    'log_stdout': True,
                                                     'city': 'SiouxFalls',
-                                                    'horizon': 400,
+                                                    'horizon': horizon,
                                                     'model_name': 'FixedBudgetDDPGAllocatorDDPGComponent',
                                                     'randomize_factor': 0.01,
                                                     'budget': budget,
-                                                    'n_components': n_components,
-                                                    'n_steps': 1024,
-                                                    'n_epochs': 100,
+                                                    'n_components': n_component,
+                                                    'n_steps': n_steps,
+                                                    'n_epochs': n_epochs * 3,
                                                     'update_time': 1,
                                                     'allocator/n_features': 2,
                                                     'allocator/critic_lr': a_critic_lr,
@@ -474,29 +478,29 @@ if __name__ == '__main__':
 
     # RUN SingleDDPG
 
-    # for critic_lr in [0.01]:
-    #     for actor_lr in [0.00005]:
-    #         for gamma in [0.99]:
-    #             for budget in [5, 10, 15]:
-    #                 for seed in range(2):
-    #                     parameters.append({
-    #                         'seed': seed,
-    #                         'log_stdout': False,
-    #                         'model_name': 'FixedBudgetNetworkedWideDDPG',
-    #                         'city': 'SiouxFalls',
-    #                         'horizon': 400,
-    #                         'randomize_factor': 0.01,
-    #                         'budget': budget,
-    #                         'n_components': 4,
-    #                         'n_steps': 1024,
-    #                         'n_epochs': 30,
-    #                         'update_time': 1,
-    #                         'critic_lr': critic_lr,
-    #                         'actor_lr': actor_lr,
-    #                         'gamma': gamma,
-    #                         'tau': 0.001,
-    #                         'decay_length': 30_000
-    #                     })
+    for critic_lr in [0.01]:
+        for actor_lr in [0.00005]:
+            for gamma in [0.99]:
+                for budget in budgets:
+                    for seed in seeds:
+                        parameters.append({
+                            'seed': seed,
+                            'log_stdout': True,
+                            'model_name': 'FixedBudgetNetworkedWideDDPG',
+                            'city': 'SiouxFalls',
+                            'horizon': horizon,
+                            'randomize_factor': randomize_factor,
+                            'budget': budget,
+                            'n_components': 1,
+                            'n_steps': n_steps,
+                            'n_epochs': n_epochs * 2,
+                            'update_time': 1,
+                            'critic_lr': critic_lr,
+                            'actor_lr': actor_lr,
+                            'gamma': gamma,
+                            'tau': 0.001,
+                            'decay_length': 30_000
+                        })
 
     # Running
 

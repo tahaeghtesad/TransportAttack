@@ -1,7 +1,7 @@
 import os
 
 import numpy as np
-# import tikzplotlib
+import tikzplotlib
 from matplotlib import pyplot as plt
 from sklearn.metrics import roc_curve, auc
 
@@ -17,7 +17,7 @@ def create_box_plot(
 ):
     fig, ax = plt.subplots()
     fig.set_figheight(8)
-    fig.set_figwidth(12)
+    # fig.set_figwidth(12)
     ax.spines[['bottom', 'top']].set_visible(False)
     ax.boxplot(data.T)
     ax.set_title(title)

@@ -37,6 +37,13 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
 
         elif config['network']['method'] == 'generate':
             self.base = BaseTransportationNetworkEnv.gen_network(**config['network'])
+        elif config['network']['method'] == 'edge_list':
+            self.base = nx.read_edgelist(
+                f'{base_path}/TransportationNetworks/{config["network"]["file"]}',
+                create_using=nx.DiGraph,
+                data=True,
+                nodetype=int,
+            )
         else:
             raise Exception(f'Unknown network method: {config["network"]["method"]}'
                             f', available methods: network_file, generate')
@@ -45,7 +52,7 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
             city = self.config['network']['city']
             self.base_trips = Trip.trips_using_od_file(f'{base_path}/TransportationNetworks/{city}/{city}_trips.tntp')
         elif self.config['trips']['type'] == 'trips_file_demand':
-            self.trips = Trip.using_demand_file(f'{base_path}/Sirui/traffic_data/sf_demand.txt', 'top', 10)(self.base)
+            self.trips = Trip.using_demand_file(f'{base_path}/traffic_data/sf_demand.txt', 'top', 10)(self.base)
         elif self.config['trips']['type'] == 'deterministic':
             self.trips: List[Trip] = Trip.deterministic_test_trip_creator(self.config['trips']['count'])(self.base)
         elif self.config['trips']['type'] == 'random':
@@ -163,9 +170,6 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
 
         for i, e in enumerate(self.base.edges):
             feature_vector[i][1] = on_edge[e]  # feature 1
-
-        # mean = np.array([[868.1666, 1106.823, 411.72678, 501.67432, 1162.9213]]).repeat(self.base.number_of_edges(), axis=0)
-        # var = np.array([[695.8287, 446.11535, 169.93016, 90.32494, 613.1422]]).repeat(self.base.number_of_edges(), axis=0)
 
         return feature_vector / self.max_number_of_vehicles
 

@@ -1,6 +1,4 @@
 import logging
-import logging
-import os
 import random
 import sys
 from datetime import datetime
@@ -16,7 +14,7 @@ from models.heuristics.budgeting import FixedBudgeting
 from models.heuristics.component import GreedyComponent
 from models.rl_attackers import FixedBudgetNetworkedWideGreedy, Attacker
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
-from util.graphing import create_box_plot, create_bar_plot
+from util.graphing import create_box_plot
 
 if __name__ == '__main__':
     run_id = f'{datetime.now().strftime("%Y%m%d-%H%M%S")}'
@@ -47,20 +45,18 @@ if __name__ == '__main__':
                 type='trips_file',
                 randomize_factor=0.05,
             ),
-            # rewarding_rule='proportional',
             rewarding_rule='step_count',
             n_components=4,
         )
     )
 
     env = DynamicMultiAgentTransportationNetworkEnvironment(config['env_config'])
-    # env.show_base_graph()
     print(env.edge_component_mapping)
 
     device = torch.device('cpu')
     logger.info(device)
 
-    for _budget in [10]:
+    for _budget in [5, 10, 15, 30]:
 
         models = [
             Zero(env.edge_component_mapping),
@@ -73,8 +69,7 @@ if __name__ == '__main__':
                 GreedyComponent(env.edge_component_mapping)
             ),
             torch.load(f'report_weights/{_budget}_ddpg.tar'),
-            # torch.load(f'report_weights/{_budget}_low_level.tar'),
-            torch.load(f'report_weights/Attacker_final.tar'),
+            torch.load(f'report_weights/{_budget}_low_level.tar'),
             torch.load(f'report_weights/{_budget}_high_level.tar'),
             torch.load(f'report_weights/{_budget}_hierarchical.tar'),
         ]
@@ -116,24 +111,13 @@ if __name__ == '__main__':
                 rewards.append(episode_reward)
 
             model_rewards[model] = rewards
-            # print(np.array(observation_history).mean(axis=(0, 1)))
-            # print(np.array(observation_history).var(axis=(0, 1)))
-            # np.save('observation_mean.npy', np.array(observation_history).mean(axis=0))
-            # np.save('observation_var.npy', np.array(observation_history).var(axis=0))
-            # np.save('reward_mean.npy', np.array(reward_history).mean(axis=0))
-            # np.save('reward_var.npy', np.array(reward_history).var(axis=0))
-
-        # data = np.array([np.mean(value) for key, value in model_rewards.items()])
-        # base = data[0]
-        # data = (data[1:] - base) / base * 100
 
         create_box_plot(
             np.array([model_rewards[model] for model in models]),
-            f'SiouxFalls - {_budget} Budget',
+            '',
             'Strategy',
-            # [model.name for model in models],
             names,
             'Total Travel Time',
-            f'/Users/txe5135/Desktop/budget-{_budget}.png',
+            f'/Users/txe5135/Desktop/budget-{_budget}.tikz',
             False,
         )
