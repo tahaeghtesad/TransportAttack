@@ -5,52 +5,41 @@ import random
 import sys
 import time
 from datetime import datetime
-from multiprocessing import Pool
 
 import numpy as np
 import torch
 from torch.utils import tensorboard as tb
 from tqdm import tqdm
 
-from models.ddpg_attacker import FixedBudgetNetworkedWideDDPG
-from models.dl.allocators import DDPGAllocator
-from models.dl.component import DDPGComponent
-from models.dl.epsilon import ConstantEpsilon
-from models.dl.noise import OUActionNoise, GaussianNoiseDecay
-from models.heuristics.allocators import ProportionalAllocator
+from models import CustomModule
+from models.ddpg_attacker import FixedBudgetNetworkedWideDDPG, FixedBudgetNetworkedWideTD3
+from models.dl.noise import OUActionNoise
 from models.heuristics.budgeting import FixedBudgeting
-from models.heuristics.component import GreedyComponent
-from models.rl_attackers import Attacker
+from models.ppo_attacker import FixedBudgetNetworkedWidePPO
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
-from util.rl.experience_replay import ExperienceReplay
+from util.rl.experience_replay import TrajectoryExperience, ExperienceReplay
 
 
-def exception_wrapper(config):
-    try:
-        return train_single(config)
-    except Exception as e:
-        return f'failed_{datetime.now().strftime("%Y%m%d%H%M%S%f")}', 0.0
-
-
-def train_single(config):
+def train_single(config, model_creator, mode):
+    assert mode == 'off_policy' or mode == 'on_policy', f'mode must be either off_policy or on_policy, but got "{mode}"'
     time.sleep(random.random() * 10)
     torch.set_num_threads(1)
-    model_name = config['model_name']
 
     random.seed(config['seed'])
     np.random.seed(config['seed'])
     torch.manual_seed(config['seed'])
     base_path = '.'
+    log_name = 'logs'
 
-    # run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")}'
-    run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")}-{config["budget"]}-{config["city"]}-{config["model_name"]}'
+    run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")}'
+    # run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")}-{config["budget"]}-{config["city"]}-{config["model_name"]}'
     # run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")},erf={env_randomize_factor:.5f},a_lr={allocator_actor_lr:.5f},c_lr={allocator_critic_lr:.5f},a_g={allocator_gamma:.5f},a_l={allocator_lam:.5f},a_e={allocator_epsilon:.5f},a_ec={allocator_entropy_coeff:.5f},a_vc={allocator_value_coeff:.5f},a_nu={allocator_n_updates},a_pgc={allocator_policy_grad_clip},a_bs={allocator_batch_size},a_crv={allocator_clip_range_vf},ge={greedy_epsilon:.5f}'
     # run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")},c_lr={critic_lr:.5f},a_lr={actor_lr:.5f},t={tau:.5f},dl={decay_length},ut={update_time}'
-    writer = tb.SummaryWriter(f'{base_path}/logs/{run_id}')
-    os.makedirs(f'{base_path}/logs/{run_id}/weights')
+    writer = tb.SummaryWriter(f'{base_path}/{log_name}/{run_id}')
+    os.makedirs(f'{base_path}/{log_name}/{run_id}/weights')
 
     log_handlers = [
-        logging.FileHandler(f'{base_path}/logs/{run_id}/log.log'),
+        logging.FileHandler(f'{base_path}/{log_name}/{run_id}/log.log'),
     ]
     if config['log_stdout']:
         log_handlers.append(logging.StreamHandler(sys.stdout))
@@ -65,21 +54,19 @@ def train_single(config):
 
     env_config = dict(
         network=dict(
+            # method='network_file',
+            # city='SiouxFalls',
             method='edge_list',
-            file='Generated/GRE-6x8-20231009151840948002.edgelist',
-            city='SiouxFalls',
+            file=config['file'],
+            randomize_factor=config['randomize_factor']
         ),
         horizon=config['horizon'],
-        num_sample=20,
         render_mode=None,
         congestion=True,
-        trips=dict(
-            type='trips_file',
-            # type='trips_file_demand',
-            randomize_factor=config['randomize_factor'],
-        ),
         # rewarding_rule='normalized',
-        rewarding_rule='proportional',
+        # rewarding_rule='proportional',
+        # rewarding_rule='travel_time_increased',
+        rewarding_rule=config['rewarding_rule'],
         reward_multiplier=1.0,
         n_components=config['n_components'],
     )
@@ -88,102 +75,21 @@ def train_single(config):
 
     total_steps = config['n_steps'] * config['n_epochs']
 
-    if model_name == 'FixedBudgetNetworkedWideDDPG':
-        model = FixedBudgetNetworkedWideDDPG(
-            edge_component_mapping=env.edge_component_mapping,
-            budgeting=FixedBudgeting(
-                budget=config['budget'],
-                noise=OUActionNoise(0, 0.5, 0.001, 30_000),
-            ),
-            n_features=5,
-            actor_lr=config['actor_lr'],
-            critic_lr=config['critic_lr'],
-            gamma=config['gamma'],
-            tau=config['tau'],
-            noise=GaussianNoiseDecay(0.2, 0.00001, config['decay_length'])
-        )
-    elif model_name == 'FixedBudgetDDPGAllocatorDDPGComponent':
-        model = Attacker(
-            edge_component_mapping=env.edge_component_mapping,
-            budgeting=FixedBudgeting(
-                budget=config['budget'],
-                noise=OUActionNoise(0, 0.5, 0.001, 30_000),
-            ),
-            name='FixedBudgetDDPGAllocatorDDPGComponent',
-            allocator=DDPGAllocator(
-                env.edge_component_mapping,
-                2,
-                critic_lr=config['allocator/critic_lr'],
-                actor_lr=config['allocator/actor_lr'],
-                gamma=config['allocator/gamma'],
-                tau=config['allocator/tau'],
-                noise=GaussianNoiseDecay(0.5, 0.001, config['allocator/decay_length']),
-                epsilon=ConstantEpsilon(0.0)
-            ),
-            component=DDPGComponent(
-                env.edge_component_mapping,
-                config['component/n_features'],
-                critic_lr=config['component/critic_lr'],
-                actor_lr=config['component/actor_lr'],
-                gamma=config['component/gamma'],
-                tau=config['component/tau'],
-                noise=GaussianNoiseDecay(0.2, 0.00001, config['component/decay_length']),
-            )
-        )
-    elif model_name == 'FixedBudgetProportionalAllocatorDDPGComponent':
-        model = Attacker(
-            edge_component_mapping=env.edge_component_mapping,
-            budgeting=FixedBudgeting(
-                budget=config['budget'],
-                noise=OUActionNoise(0, 0.5, 0.001, 30_000),
-            ),
-            name='FixedBudgetProportionalAllocatorDDPGComponent',
-            allocator=ProportionalAllocator(),
-            component=DDPGComponent(
-                env.edge_component_mapping,
-                config['component/n_features'],
-                critic_lr=config['component/critic_lr'],
-                actor_lr=config['component/actor_lr'],
-                gamma=config['component/gamma'],
-                tau=config['component/tau'],
-                noise=GaussianNoiseDecay(0.2, 0.00001, config['component/decay_length']),
-            )
-        )
-    elif model_name == 'FixedBudgetDDPGAllocatorGreedyComponent':
-        model = Attacker(
-            edge_component_mapping=env.edge_component_mapping,
-            budgeting=FixedBudgeting(
-                budget=config['budget'],
-                noise=OUActionNoise(0, 0.5, 0.001, 30_000),
-            ),
-            name='FixedBudgetDDPGAllocatorGreedyComponent',
-            allocator=DDPGAllocator(
-                env.edge_component_mapping,
-                2,
-                critic_lr=config['allocator/critic_lr'],
-                actor_lr=config['allocator/actor_lr'],
-                gamma=config['allocator/gamma'],
-                tau=config['allocator/tau'],
-                noise=GaussianNoiseDecay(0.5, 0.001, config['allocator/decay_length']),
-                epsilon=ConstantEpsilon(0.0)
-            ),
-            component=GreedyComponent(env.edge_component_mapping),
-        )
-    else:
-        raise Exception(f'Unknown model {model_name}')
+    model = model_creator(env)
 
     logger.info(model)
 
-    with open(f'{base_path}/logs/{run_id}/config.json', 'w') as fd:
+    with open(f'{base_path}/{log_name}/{run_id}/config.json', 'w') as fd:
         json.dump(env_config, fd, indent=4)
 
     device = torch.device('cpu')
     logger.info(f'Computation device: {device}')
     logger.info(env_config)
 
-    buffer = ExperienceReplay(100_000, 64)
-    # buffer = TrajectoryExperience()
     model = model.to(device)
+
+    buffer = ExperienceReplay(100_000, 64) if mode == 'off_policy' else TrajectoryExperience()
+
     pbar = tqdm(total=total_steps, desc='Training', disable=not config['log_stdout'])
 
     global_step = 0
@@ -204,9 +110,10 @@ def train_single(config):
 
     while global_step < total_steps:
 
-        for _ in range(config['n_steps']):
+        for s_count in range(config['n_steps']):
 
             pbar.update(1)
+            pbar.set_description(f'Collecting Sample {s_count}/{config["n_steps"]}')
             step += 1
             global_step += 1
 
@@ -229,7 +136,7 @@ def train_single(config):
 
                 if original_rewards > best_episode_reward:
                     best_episode_reward = original_rewards
-                    torch.save(model, f'{base_path}/logs/{run_id}/weights/Attacker_{global_step}.tar')
+                    torch.save(model, f'{base_path}/{log_name}/{run_id}/weights/Attacker_{global_step}.tar')
 
                 writer.add_scalar(f'env/cumulative_reward', rewards, global_step)
                 writer.add_scalar(f'env/discounted_reward', discounted_reward, global_step)
@@ -259,8 +166,7 @@ def train_single(config):
                 original_reward = 0
                 episode += 1
 
-            if global_step % config['update_time'] == 0:
-
+            if mode == 'off_policy':
                 stats = model.update(*buffer.get_experiences())
 
                 for name, value in stats.items():
@@ -271,244 +177,79 @@ def train_single(config):
                     else:
                         writer.add_scalar(name, value, global_step)
 
-    torch.save(model, f'{base_path}/logs/{run_id}/weights/Attacker_final.tar')
+                buffer.reset()
+
+        if mode == 'on_policy':
+            stats = model.update(*buffer.get_experiences())
+
+            for name, value in stats.items():
+                if type(value) is list:
+                    writer.add_histogram(name, np.array(value), global_step)
+                elif type(value) is np.ndarray:
+                    writer.add_histogram(name, value, global_step)
+                else:
+                    writer.add_scalar(name, value, global_step)
+
+            buffer.reset()
+
+    torch.save(model, f'{base_path}/{log_name}/{run_id}/weights/Attacker_final.tar')
 
     return run_id, best_episode_reward
 
 
 if __name__ == '__main__':
+    config = dict(
+            # file='GRE-4x2-0.5051-0.1111-20231121124113244125',
+            file='GRE-4x4-0.5051-0.1111-20231121131109967053',
+            # file='GRE-6x8-0.5051-0.1111-20231121124104988621',
+            seed=np.random.randint(1000),
+            rewarding_rule='mixed',
+            # rewarding_rule='travel_time_increased',
+            horizon=50,
+            randomize_factor=0.01,
+            n_components=4,
+            n_steps=2048,
+            n_epochs=128,
+            log_stdout=True,
+        )
 
-    # train_single(
-    #     {
-    #         'seed': 0,
-    #         'log_stdout': True,
-    #         'model_name': 'FixedBudgetNetworkedWideDDPG',
-    #         'city': 'SiouxFalls',
-    #         'horizon': 400,
-    #         'randomize_factor': 0.01,
-    #         'budget': 30,
-    #         'n_components': 4,
-    #         'n_steps': 1024,
-    #         'n_epochs': 1,
-    #         'update_time': 1,
-    #         'critic_lr': 0.001,
-    #         'actor_lr': 0.00001,
-    #         'gamma': 0.99,
-    #         'tau': 0.001,
-    #         'decay_length': 30_000
-    #     }
-    # )
-    #
-    # train_single(
-    #     {
-    #         'seed': 0,
-    #         'log_stdout': True,
-    #         'city': 'EMA',
-    #         'horizon': 400,
-    #         'model_name': 'FixedBudgetDDPGAllocatorDDPGComponent',
-    #         'randomize_factor': 0.01,
-    #         'budget': 30,
-    #         'n_components': 4,
-    #         'n_steps': 1024,
-    #         'n_epochs': 1,
-    #         'update_time': 1,
-    #         'allocator/n_features': 2,
-    #         'allocator/critic_lr': 0.001,
-    #         'allocator/actor_lr': 0.00001,
-    #         'allocator/gamma': 0.99,
-    #         'allocator/tau': 0.001,
-    #         'allocator/decay_length': 30_000,
-    #         'component/n_features': 5,
-    #         'component/critic_lr': 0.001,
-    #         'component/actor_lr': 0.00001,
-    #         'component/gamma': 0.99,
-    #         'component/tau': 0.001,
-    #         'component/decay_length': 10_000,
-    #     }
-    # )
-    #
-    # train_single(
-    #     {
-    #         'seed': 0,
-    #         'log_stdout': True,
-    #         'city': 'EMA',
-    #         'horizon': 400,
-    #         'model_name': 'FixedBudgetProportionalAllocatorDDPGComponent',
-    #         'randomize_factor': 0.01,
-    #         'budget': 30,
-    #         'n_components': 4,
-    #         'n_steps': 1024,
-    #         'n_epochs': 1,
-    #         'update_time': 1,
-    #         'component/n_features': 5,
-    #         'component/critic_lr': 0.001,
-    #         'component/actor_lr': 0.005,
-    #         'component/gamma': 0.99,
-    #         'component/tau': 0.001,
-    #         'component/decay_length': 10_000,
-    #     }
-    # )
-    #
-    # train_single(
-    #     {
-    #         'seed': 0,
-    #         'model_name': 'FixedBudgetDDPGAllocatorGreedyComponent',
-    #         'log_stdout': True,
-    #         'city': 'EMA',
-    #         'horizon': 400,
-    #         'randomize_factor': 0.01,
-    #         'budget': 30,
-    #         'n_components': 4,
-    #         'n_steps': 1024,
-    #         'n_epochs': 1,
-    #         'update_time': 1,
-    #         'allocator/n_features': 2,
-    #         'allocator/critic_lr': 0.01,
-    #         'allocator/actor_lr': 0.0001,
-    #         'allocator/gamma': 0.99,
-    #         'allocator/tau': 0.001,
-    #         'allocator/decay_length': 10_000,
-    #     }
-    # )
+    def ppo_model_creator(env):
+        return FixedBudgetNetworkedWidePPO(
+            edge_component_mapping=env.edge_component_mapping,
+            budgeting=FixedBudgeting(30),
+            n_features=5,
+            actor_lr=0.0003,
+            critic_lr=0.0003,
+            gamma=0.97,
+            lam=0.95,
+            epsilon=0.2,
+            normalize_advantages=False,
+            entropy_coeff=1.0,
+            n_updates=1,
+            batch_size=128,
+            value_coeff=0.1,
+        )
 
-    parameters = []
+    def td3_model_creator(env):
+        return FixedBudgetNetworkedWideTD3(
+            env.edge_component_mapping,
+            budgeting=FixedBudgeting(30, OUActionNoise(mean=0.0, std_deviation=0.5, target_scale=0.0001, decay=10_000)),
+            n_features=5,
+            actor_lr=0.0003,
+            critic_lr=0.0003,
+            gamma=0.97,
+            tau=0.001,
+            noise=OUActionNoise(mean=0.0, std_deviation=0.5, target_scale=0.0001, decay=20_000),
+            actor_update_interval=3,
+        )
 
-    budgets = [60, 90, 120, 150]
-    seeds = range(2)
-    n_components = [6]
-    horizon = 200
-    n_steps = 1024
-    n_epochs = 30
-    randomize_factor = 0.01
+    # train_single(config, ddpg_model_creator, 'off_policy')
+    train_single(config, ppo_model_creator, 'on_policy')
+    # train_single(config, td3_model_creator, 'off_policy')
+    # config['rewarding_rule'] = 'travel_time_increased'
+    # train_single(config, ddpg_model_creator, 'off_policy')
+    # config['file'] = 'GRE-4x4-0.5051-0.1111-20231121131109967053'
+    # train_single(config, ddpg_model_creator, 'off_policy')
+    # train_single(config, ppo_model_creator, 'on_policy')
 
-    # High-Level Runs
-
-    for critic_lr in [0.01]:
-        for actor_lr in [0.00005]:
-            for decay_length in [10_000]:
-                for n_component in n_components:
-                    for budget in budgets:
-                        for seed in seeds:
-                            parameters.append({
-                                'seed': seed,
-                                'model_name': 'FixedBudgetDDPGAllocatorGreedyComponent',
-                                'log_stdout': True,
-                                'city': 'SiouxFalls',
-                                'horizon': horizon,
-                                'randomize_factor': randomize_factor,
-                                'budget': budget,
-                                'n_components': n_component,
-                                'n_steps': n_steps,
-                                'n_epochs': n_epochs,
-                                'update_time': 1,
-                                'allocator/n_features': 2,
-                                'allocator/critic_lr': critic_lr,
-                                'allocator/actor_lr': actor_lr,
-                                'allocator/gamma': 0.99,
-                                'allocator/tau': 0.001,
-                                'allocator/decay_length': decay_length,
-                            })
-    #
-    # # Low-Level Runs
-    #
-    for critic_lr in [0.01]:
-        for actor_lr in [0.00005]:
-            for decay_length in [10_000]:
-                for n_component in n_components:
-                    for budget in budgets:
-                        for seed in seeds:
-                            parameters.append({
-                                'seed': seed,
-                                'log_stdout': False,
-                                'city': 'SiouxFalls',
-                                'horizon': horizon,
-                                'model_name': 'FixedBudgetProportionalAllocatorDDPGComponent',
-                                'randomize_factor': 0.01,
-                                'budget': budget,
-                                'n_components': n_component,
-                                'n_steps': n_steps,
-                                'n_epochs': n_epochs * 2,
-                                'update_time': 1,
-                                'component/n_features': 5,
-                                'component/critic_lr': critic_lr,
-                                'component/actor_lr': actor_lr,
-                                'component/gamma': 0.99,
-                                'component/tau': 0.001,
-                                'component/decay_length': decay_length,
-                            })
-
-    # Run HMADDPG
-
-    for a_critic_lr in [0.001]:
-        for a_actor_lr in [0.00001]:
-            for a_decay_length in [50_000]:
-                for a_gamma in [0.99]:
-                    for budget in budgets:
-                        for c_critic_lr in [0.01]:
-                            for c_actor_lr in [0.00001]:
-                                for c_gamma in [0.9]:
-                                    for n_component in n_components:
-                                        for c_decay_length in [10_000]:
-                                            for seed in range(1, 3):
-                                                parameters.append({
-                                                    'seed': seed,
-                                                    'log_stdout': True,
-                                                    'city': 'SiouxFalls',
-                                                    'horizon': horizon,
-                                                    'model_name': 'FixedBudgetDDPGAllocatorDDPGComponent',
-                                                    'randomize_factor': 0.01,
-                                                    'budget': budget,
-                                                    'n_components': n_component,
-                                                    'n_steps': n_steps,
-                                                    'n_epochs': n_epochs * 3,
-                                                    'update_time': 1,
-                                                    'allocator/n_features': 2,
-                                                    'allocator/critic_lr': a_critic_lr,
-                                                    'allocator/actor_lr': a_actor_lr,
-                                                    'allocator/gamma': a_gamma,
-                                                    'allocator/tau': 0.001,
-                                                    'allocator/decay_length': a_decay_length,
-                                                    'component/n_features': 5,
-                                                    'component/critic_lr': c_critic_lr,
-                                                    'component/actor_lr': c_actor_lr,
-                                                    'component/gamma': c_gamma,
-                                                    'component/tau': 0.001,
-                                                    'component/decay_length': c_decay_length,
-                                                })
-
-    # RUN SingleDDPG
-
-    for critic_lr in [0.01]:
-        for actor_lr in [0.00005]:
-            for gamma in [0.99]:
-                for budget in budgets:
-                    for seed in seeds:
-                        parameters.append({
-                            'seed': seed,
-                            'log_stdout': True,
-                            'model_name': 'FixedBudgetNetworkedWideDDPG',
-                            'city': 'SiouxFalls',
-                            'horizon': horizon,
-                            'randomize_factor': randomize_factor,
-                            'budget': budget,
-                            'n_components': 1,
-                            'n_steps': n_steps,
-                            'n_epochs': n_epochs * 2,
-                            'update_time': 1,
-                            'critic_lr': critic_lr,
-                            'actor_lr': actor_lr,
-                            'gamma': gamma,
-                            'tau': 0.001,
-                            'decay_length': 30_000
-                        })
-
-    # Running
-
-    print(f'Running {len(parameters)} experiments')
-
-    writer = tb.SummaryWriter('logs/hparam_search')
-
-    with Pool(8) as pool:
-        for param, (run_id, reward) in zip(parameters, tqdm(pool.imap(exception_wrapper, parameters), total=len(parameters))):
-            writer.add_hparams(param, metric_dict={'reward': reward},
-                               run_name=run_id)
+    # train_single(config, ppo_model_and_buffer_creator)

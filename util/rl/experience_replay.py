@@ -102,3 +102,40 @@ class TrajectoryExperience:
             self.dones,
             self.truncateds,
         )
+
+
+class BasicTrajectoryExperience:
+
+    def __init__(self):
+        super().__init__()
+        self.states = []
+        self.actions = []
+        self.rewards = []
+        self.dones = []
+        self.truncateds = []
+
+    def add(self, state, action, reward, done, truncated):
+        self.states.append(state)
+        self.actions.append(action)
+        self.rewards.append(reward)
+        self.dones.append(done)
+        self.truncateds.append(truncated)
+
+    def reset(self):
+        self.states = []
+        self.actions = []
+        self.rewards = []
+        self.dones = []
+        self.truncateds = []
+
+    def size(self):
+        return len(self.states)
+
+    def get_experiences(self):
+        return (
+            self.states,
+            self.actions,
+            self.rewards,
+            self.dones,
+            self.truncateds,
+        )

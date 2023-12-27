@@ -81,7 +81,8 @@ class QCritic(CustomModule):
 
 class FixedBudgetNetworkedWideDDPG(BaseAttacker):
 
-    def __init__(self, edge_component_mapping, budgeting: BudgetingInterface, n_features, actor_lr, critic_lr, gamma, tau, noise: NoiseInterface) -> None:
+    def __init__(self, edge_component_mapping, budgeting: BudgetingInterface, n_features, actor_lr, critic_lr, gamma,
+                 tau, target_noise_scale, noise: NoiseInterface) -> None:
         super().__init__('FixedBudgetNetworkedWideDDPG', edge_component_mapping)
         self.budgeting = budgeting
 
@@ -92,6 +93,7 @@ class FixedBudgetNetworkedWideDDPG(BaseAttacker):
         self.gamma = gamma
         self.tau = tau
         self.noise = noise
+        self.target_noise_scale = target_noise_scale
 
         self.actor = DeterministicActor(n_features, self.n_edges, actor_lr)
         self.target_actor = DeterministicActor(n_features, self.n_edges, actor_lr)
@@ -107,23 +109,28 @@ class FixedBudgetNetworkedWideDDPG(BaseAttacker):
 
     def forward(self, observation, deterministic):
         with torch.no_grad():
+            target_action_noise_distribution = torch.distributions.Normal(loc=0.0, scale=self.target_noise_scale)
+
             aggregated_state = self._aggregate_state(observation)
             budgets = self.budgeting.forward(aggregated_state, deterministic)
             actions = self.actor.forward(observation, budgets)
+            actions = torch.nn.functional.normalize(
+                torch.maximum(actions + target_action_noise_distribution.sample(actions.shape), torch.zeros_like(actions, device=self.device)), p=1, dim=1)
 
         if not deterministic:
-            actions = torch.nn.functional.normalize(torch.maximum(actions + self.noise(actions.shape), torch.zeros_like(actions, device=self.device)))
+            actions = torch.nn.functional.normalize(
+                torch.maximum(actions + self.noise(actions.shape), torch.zeros_like(actions, device=self.device)))
 
         return actions * budgets, actions, torch.zeros((observation.shape[0], self.n_components)), budgets
 
     def _update(self, observation, allocations, budgets, action, reward, next_observation, done, truncateds):
-
         with torch.no_grad():
             next_aggregated_state = self._aggregate_state(next_observation)
             next_budget = self.budgeting.forward(next_aggregated_state, True)
             next_action = self.target_actor.forward(next_observation, next_budget)
 
-            target_value = torch.sum(reward, dim=1, keepdim=True) + self.gamma * (1 - done) * self.target_critic.forward(next_observation, next_action, next_budget)
+            target_value = torch.sum(reward, dim=1, keepdim=True) + self.gamma * (
+                        1 - done) * self.target_critic.forward(next_observation, next_action, next_budget)
 
         current_value = self.critic.forward(observation, action, budgets)
         loss = torch.nn.functional.mse_loss(target_value, current_value)
@@ -142,6 +149,73 @@ class FixedBudgetNetworkedWideDDPG(BaseAttacker):
 
         soft_sync(self.target_critic, self.critic, self.tau)
         soft_sync(self.target_actor, self.actor, self.tau)
+
+        return {
+            'attacker/q_loss': loss.detach().cpu().numpy().item(),
+            'attacker/q_max': target_value.max().cpu().numpy().item(),
+            'attacker/q_min': target_value.min().cpu().numpy().item(),
+            'attacker/q_mean': target_value.mean().cpu().numpy().item(),
+            'attacker/r2': r2_score(target_value, current_value).detach().cpu().numpy().item(),
+            'attacker/noise': self.noise.get_current_noise().detach().cpu().numpy().item()
+        }
+
+
+class FixedBudgetNetworkedWideTD3(FixedBudgetNetworkedWideDDPG):
+    def __init__(self, edge_component_mapping, budgeting: BudgetingInterface, n_features, actor_lr, critic_lr, gamma,
+                 tau, actor_update_interval, noise: NoiseInterface) -> None:
+        super().__init__(edge_component_mapping, budgeting, n_features, actor_lr, critic_lr, gamma, tau, noise)
+
+        self.actor_update_interval = actor_update_interval
+
+        self.critic_2 = QCritic(n_features, self.n_edges, critic_lr)
+        self.target_critic_2 = QCritic(n_features, self.n_edges, critic_lr)
+
+        hard_sync(self.target_critic_2, self.critic_2)
+
+        self.last_actor_update = 0
+
+    def _update(self, observation, allocations, budgets, action, reward, next_observation, done, truncateds):
+        with torch.no_grad():
+            next_aggregated_state = self._aggregate_state(next_observation)
+            next_budget = self.budgeting.forward(next_aggregated_state, True)
+            next_action = self.target_actor.forward(next_observation, next_budget)
+
+            target_value = torch.sum(reward, dim=1, keepdim=True) + self.gamma * (
+                    1 - done) * torch.minimum(
+                self.target_critic.forward(next_observation, next_action, next_budget),
+                self.target_critic_2.forward(next_observation, next_action, next_budget)
+            )
+
+        current_value = self.critic.forward(observation, action, budgets)
+        loss = torch.nn.functional.mse_loss(target_value, current_value)
+
+        self.critic.optimizer.zero_grad()
+        loss.backward()
+        self.critic.optimizer.step()
+
+        current_value = self.critic_2.forward(observation, action, budgets)
+        loss = torch.nn.functional.mse_loss(target_value, current_value)
+
+        self.critic_2.optimizer.zero_grad()
+        loss.backward()
+        self.critic_2.optimizer.step()
+
+        if self.last_actor_update % self.actor_update_interval == 0:
+
+            current_action = self.actor.forward(observation, budgets)
+            current_value = self.critic.forward(observation, current_action, budgets)
+            actor_loss = - current_value.mean()
+
+            self.actor.optimizer.zero_grad()
+            actor_loss.backward()
+            self.actor.optimizer.step()
+
+            soft_sync(self.target_actor, self.actor, self.tau)
+
+        self.last_actor_update += 1
+
+        soft_sync(self.target_critic, self.critic, self.tau)
+        soft_sync(self.target_critic_2, self.critic_2, self.tau)
 
         return {
             'attacker/q_loss': loss.detach().cpu().numpy().item(),

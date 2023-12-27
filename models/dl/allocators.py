@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 
-from models import AllocatorInterface, DecayingNoiseInterface, CustomModule, EpsilonInterface
+from models import AllocatorInterface, DecayingNoiseInterface, CustomModule, EpsilonInterface, \
+    NoBudgetAllocatorInterface
 from util.torch.math import r2_score, explained_variance
 from util.torch.misc import hard_sync, soft_sync
 from util.torch.rl import GeneralizedAdvantageEstimation
@@ -112,7 +113,8 @@ class StochasticActor(CustomModule):
             torch.nn.Linear(128, self.n_components),
             # torch.nn.Sigmoid(),
             # torch.nn.Softmax(dim=1),
-            torch.nn.Softplus()
+            # torch.nn.Softplus()
+            torch.nn.ReLU(),
         )
 
     def forward(self, aggregated_state, budgets, deterministic):
@@ -406,9 +408,12 @@ class PPOAllocator(AllocatorInterface):
                     batch_advantages = advantages[indices]
                 distribution, logits = self.actor.get_distribution(aggregated_states[indices], budgets[indices])
                 new_log_prob = torch.unsqueeze(distribution.log_prob(allocations[indices]), dim=1)
-                ratio = torch.exp(new_log_prob - old_log_prob[indices])
-                surr1 = ratio * batch_advantages
-                surr2 = torch.clamp(ratio, 1.0 - self.epsilon, 1.0 + self.epsilon) * batch_advantages
+                # ratio = torch.exp(new_log_prob - old_log_prob[indices])
+                log_ratio = new_log_prob - old_log_prob[indices]
+                surr1 = log_ratio * batch_advantages
+                surr2 = torch.clamp(log_ratio, np.log(1.0 - self.epsilon), np.log(1.0 + self.epsilon)) * batch_advantages
+                # surr1 = ratio * batch_advantages
+                # surr2 = torch.clamp(ratio, 1.0 - self.epsilon, 1.0 + self.epsilon) * batch_advantages
                 actor_loss = - torch.min(surr1, surr2).mean()
                 actor_loss_history.append(actor_loss.detach().cpu().item())
 
@@ -419,7 +424,7 @@ class PPOAllocator(AllocatorInterface):
                 entropy = - distribution.entropy().mean()
 
                 # calculating total loss
-                loss = + actor_loss + self.value_coeff * value_loss + self.entropy_coeff * entropy + self.kl_coeff * kl_divergence
+                loss = + actor_loss + self.value_coeff * value_loss + self.entropy_coeff * entropy# + self.kl_coeff * kl_divergence
                 loss_history.append(loss.detach().cpu().item())
 
                 # update network
@@ -436,7 +441,7 @@ class PPOAllocator(AllocatorInterface):
             kl_divergence = torch.distributions.kl.kl_divergence(old_distribution, distribution)
             new_log_prob = torch.unsqueeze(distribution.log_prob(allocations), dim=1)
             log_ratio = new_log_prob - old_log_prob
-            ratio = torch.exp(log_ratio)
+            # ratio = torch.exp(log_ratio)
             entropy = torch.unsqueeze(distribution.entropy(), dim=1)
             concentration = distribution.concentration
             approx_kl_divergence = torch.exp(log_ratio) - 1 - log_ratio
@@ -449,11 +454,180 @@ class PPOAllocator(AllocatorInterface):
             'allocator/entropy_mean': entropy.mean().detach().cpu().item(),
             'allocator/concentration_mean': concentration.mean().detach().cpu().item(),
             'allocator/concentration_max': concentration.max().detach().cpu().item(),
-            'allocator/ratio_mean': ratio.mean().detach().cpu().item(),
-            'allocator/ratio_max': ratio.max().detach().cpu().item(),
-            'allocator/ratio_min': ratio.min().detach().cpu().item(),
+            'allocator/log_ratio_max': log_ratio.max().detach().cpu().item(),
+            'allocator/log_ratio_change_max': (new_log_prob - old_log_prob).abs().max().detach().cpu().item(),
             'allocator/actor_loss': np.mean(actor_loss_history),
             'allocator/r2': np.maximum(np.mean(r2_history), -1),
             'allocator/log_probs': new_log_prob.detach().cpu().numpy().tolist(),
             'allocator/advantages': advantages.flatten().detach().cpu().numpy().tolist(),
+        }
+
+
+class NoBudgetQCritic(CustomModule):
+
+    def __init__(self, n_components, n_features, lr) -> None:
+        super().__init__(name='NoBudgetQCritic')
+
+        self.n_components = n_components
+        self.n_features = n_features
+
+        self.state_extractor = torch.nn.Sequential(
+            torch.nn.Flatten(),
+            torch.nn.Linear(self.n_components * self.n_features, 128),
+            torch.nn.ReLU(),
+        )
+
+        self.action_extractor = torch.nn.Sequential(
+            torch.nn.Linear(self.n_components, 128),
+            torch.nn.ReLU(),
+        )
+
+        self.model = torch.nn.Sequential(
+            torch.nn.Linear(128 + 128, 128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128, 1),
+        )
+
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+
+    def forward(self, aggregated_state, allocation):
+
+        return self.model(
+            torch.cat((
+                self.state_extractor(aggregated_state),
+                self.action_extractor(allocation)
+            ), dim=1)
+        )
+
+    def extra_repr(self) -> str:
+        return f'n_components={self.n_components}, n_features={self.n_features}'
+
+
+class NoBudgetDeterministicActor(CustomModule):
+    def __init__(self, n_components, n_features, lr) -> None:
+        super().__init__('StochasticActor')
+
+        self.n_components = n_components
+        self.n_features = n_features
+
+        self.state_extractor = torch.nn.Sequential(
+            torch.nn.Flatten(),
+            torch.nn.Linear(self.n_components * self.n_features, 128),
+            torch.nn.ReLU(),
+        )
+
+        self.model = torch.nn.Sequential(
+            torch.nn.Linear(128, 128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128, self.n_components),
+            torch.nn.ReLU(),
+        )
+
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+
+    def forward(self, aggregated_state):
+        logits = self.model(
+            self.state_extractor(aggregated_state)
+        )
+        return torch.nn.functional.normalize(logits, dim=1, p=1)
+
+    def extra_repr(self) -> str:
+        return f'n_components={self.n_components}, n_features={self.n_features}'
+
+
+class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
+    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, target_allocation_noise_scale, noise: DecayingNoiseInterface, epsilon: EpsilonInterface):
+        super().__init__(name='TD3NoBudgetAllocator')
+
+        self.edge_component_mapping = edge_component_mapping
+        self.n_components = len(edge_component_mapping)
+        self.n_features = n_features
+        self.critic_lr = critic_lr
+        self.actor_lr = actor_lr
+        self.tau = tau
+        self.gamma = gamma
+        self.noise = noise
+        self.epsilon = epsilon
+        self.target_allocation_noise_scale = target_allocation_noise_scale
+
+        self.actor = NoBudgetDeterministicActor(self.n_components, self.n_features, self.actor_lr)
+        self.target_actor = NoBudgetDeterministicActor(self.n_components, self.n_features, self.actor_lr)
+
+        self.critic = NoBudgetQCritic(self.n_components, self.n_features, self.critic_lr)
+        self.target_critic = NoBudgetQCritic(self.n_components, self.n_features, self.critic_lr)
+
+        self.critic_1 = NoBudgetQCritic(self.n_components, self.n_features, self.critic_lr)
+        self.target_critic_1 = NoBudgetQCritic(self.n_components, self.n_features, self.critic_lr)
+
+        hard_sync(self.target_actor, self.actor)
+        hard_sync(self.target_critic, self.critic)
+        hard_sync(self.target_critic_1, self.critic_1)
+
+    def forward(self, aggregated_state, deterministic):
+
+        with torch.no_grad():
+            action = self.actor.forward(aggregated_state)
+
+        if not deterministic:
+            if self.epsilon():
+                action = torch.nn.functional.normalize(torch.rand(action.shape), dim=1, p=1)
+            action = torch.nn.functional.normalize(torch.maximum(self.noise.forward(action.shape) + action, torch.tensor(0, device=self.device)), dim=1, p=1)
+
+        return action
+
+    def update(self, aggregated_states, allocations, rewards, next_aggregated_states, dones,
+               truncateds):
+
+        # Calculate Target Values
+        with torch.no_grad():
+            target_allocation_noise = torch.distributions.Normal(loc=0.0, scale=self.target_allocation_noise_scale)
+            next_allocations = self.target_actor.forward(next_aggregated_states)
+
+            noisy_next_allocations = torch.nn.functional.normalize(torch.maximum(next_allocations + target_allocation_noise.sample(next_allocations.shape), torch.zeros_like(next_allocations, device=self.device)), dim=1, p=1)
+
+            next_q_values = self.target_critic.forward(next_aggregated_states, noisy_next_allocations)
+            next_q_values_1 = self.target_critic_1.forward(next_aggregated_states, noisy_next_allocations)
+            target_q_values = rewards + (1 - dones) * self.gamma * torch.minimum(next_q_values, next_q_values_1)
+
+        # Update Critic 0
+        q_values = self.critic.forward(aggregated_states, allocations)
+        critic_loss = torch.nn.functional.mse_loss(q_values, target_q_values)
+
+        self.critic.optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic.optimizer.step()
+
+        # Update Critic 1
+        q_values_1 = self.critic_1.forward(aggregated_states, allocations)
+        critic_loss_1 = torch.nn.functional.mse_loss(q_values_1, target_q_values)
+
+        self.critic_1.optimizer.zero_grad()
+        critic_loss_1.backward()
+        self.critic_1.optimizer.step()
+
+        # Update actor
+        current_action = self.actor.forward(aggregated_states)
+        current_q_values = self.critic.forward(aggregated_states, current_action)
+
+        actor_loss = - current_q_values.mean()
+
+        self.actor.optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor.optimizer.step()
+
+        # Update target networks
+        soft_sync(self.target_critic, self.critic, self.tau)
+        soft_sync(self.target_actor, self.actor, self.tau)
+        soft_sync(self.target_critic_1, self.critic_1, self.tau)
+
+        return {
+            'allocator/q_loss': critic_loss.detach().cpu().item(),
+            'allocator/q_min': q_values.min().detach().cpu().item(),
+            'allocator/q_max': q_values.max().detach().cpu().item(),
+            'allocator/q_mean': q_values.mean().detach().cpu().item(),
+            'allocator/rewards': rewards.max().detach().cpu().item(),
+            'allocator/a_val': -actor_loss.detach().cpu().item(),
+            'allocator/r2': max(r2_score(target_q_values, q_values).detach().cpu().item(), -1),
+            'allocator/noise': self.noise.get_current_noise().detach().cpu().item(),
+            'allocator/epsilon': self.epsilon.get_current_epsilon().detach().cpu().item(),
         }

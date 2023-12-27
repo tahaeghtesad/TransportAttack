@@ -20,6 +20,21 @@ class AllocatorInterface(CustomModule):
         raise NotImplementedError()
 
 
+class NoBudgetAllocatorInterface(CustomModule):
+
+    @abstractmethod
+    def __init__(self, name):
+        super().__init__(name)
+
+    @abstractmethod
+    def forward(self, aggregated_state, deterministic):
+        raise NotImplementedError()
+
+    @abstractmethod
+    def update(self, aggregated_states, allocations, rewards, next_aggregated_states, dones, truncateds):
+        raise NotImplementedError()
+
+
 class ComponentInterface(CustomModule):
     @abstractmethod
     def forward(self, states, budgets, allocations, deterministic):

@@ -542,3 +542,107 @@ class PPOComponent(ComponentInterface):
             )
 
         return stats
+
+
+class TD3Component(DDPGComponent):
+
+    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise, target_action_noise_scale) -> None:
+        super().__init__(edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise)
+
+        self.target_action_noise_scale = target_action_noise_scale
+
+        self.critics_1 = torch.nn.ModuleList([
+            QCritic(f'Critic_1-{i}', len(edge_component_mapping[i]), n_features, critic_lr) for i
+            in
+            range(self.n_components)
+        ])
+
+        self.target_critics_1 = torch.nn.ModuleList([
+            QCritic(f'Critic_1-{i}', len(edge_component_mapping[i]), n_features, critic_lr) for i
+            in
+            range(self.n_components)
+        ])
+
+        hard_sync(self.target_critics_1, self.critics_1)
+
+    def forward_critic_1(self, states, budgets, allocations, actions):
+        return self.__forward_critic(self.critics_1, states, budgets, allocations, actions)
+
+    def __update_critics(self, index, states, actions, budgets, allocations, next_states, next_budgets, next_allocations, rewards, dones):
+
+        # updating critic
+
+        with torch.no_grad():
+
+            target_action_noise_distribution = torch.distributions.Normal(loc=0.0, scale=self.target_action_noise_scale)
+
+            target_action = self.target_actors[index].forward(
+                next_states[:, self.edge_component_mapping[index], :],
+                next_budgets,
+                next_allocations[:, [index]],
+                deterministic=False
+            )
+
+            target_action = torch.nn.functional.normalize(
+                torch.maximum(target_action + target_action_noise_distribution.sample(target_action.shape), torch.zeros_like(target_action, device=self.device)), p=1, dim=1
+            )
+
+            component_target_q_values = self.target_critics[index].forward(
+                next_states[:, self.edge_component_mapping[index], :],
+                next_budgets,
+                next_allocations[:, [index]],
+                target_action
+            )
+            component_target_q_values_1 = self.target_critics_1[index].forward(
+                next_states[:, self.edge_component_mapping[index], :],
+                next_budgets,
+                next_allocations[:, [index]],
+                target_action
+            )
+
+            component_y = rewards[:, [index]] + self.gamma * torch.minimum(component_target_q_values, component_target_q_values_1) * (1 - dones)
+
+        # Update Critic 0
+
+        component_current_q = self.critics[index].forward(
+            states[:, self.edge_component_mapping[index], :],
+            budgets,
+            allocations[:, [index]],
+            actions[:, self.edge_component_mapping[index]]
+        )
+
+        component_critic_loss = torch.nn.functional.mse_loss(
+            component_y,
+            component_current_q
+        )
+        self.critics[index].optimizer.zero_grad()
+        component_critic_loss.backward()
+        self.critics[index].optimizer.step()
+
+        # Update Critic 1
+
+        component_current_q_1 = self.critics_1[index].forward(
+            states[:, self.edge_component_mapping[index], :],
+            budgets,
+            allocations[:, [index]],
+            actions[:, self.edge_component_mapping[index]]
+        )
+
+        component_critic_loss_1 = torch.nn.functional.mse_loss(
+            component_y,
+            component_current_q_1
+        )
+
+        self.critics_1[index].optimizer.zero_grad()
+        component_critic_loss_1.backward()
+        self.critics_1[index].optimizer.step()
+
+        stat = dict(
+            q_loss=component_critic_loss.cpu().data.numpy().item(),
+            q_r2=max(r2_score(component_y, component_current_q).cpu().data.numpy().item(), -1),
+            q_max=component_y.max().cpu().data.numpy().item(),
+            q_min=component_y.min().cpu().data.numpy().item(),
+            q_mean=component_y.mean().cpu().data.numpy().item(),
+        )
+
+        return stat

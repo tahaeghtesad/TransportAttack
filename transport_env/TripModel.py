@@ -1,4 +1,6 @@
 import random
+from typing import Iterable, List, Tuple
+
 import networkx as nx
 from dataclasses import dataclass
 
@@ -38,12 +40,16 @@ class Trip:
                 trips.append((start, end, 0))
                 i += 1
             return Trip.get_trips(trips)
+
         return create_random_trips_starting_at_t_equals_zero
 
     @staticmethod
     def deterministic_test_trip_creator(count):
         def creator(network: nx.Graph):
-            return Trip.get_trips([(i % network.number_of_nodes() + 1, (10 - i) % network.number_of_nodes() + 1, 0) for i in range(count)])
+            return Trip.get_trips(
+                [(i % network.number_of_nodes() + 1, (10 - i) % network.number_of_nodes() + 1, 0) for i in
+                 range(count)])
+
         return creator
 
     @staticmethod
@@ -62,6 +68,7 @@ class Trip:
                 raise Exception('Unknown strategy')
 
             return Trip.get_trips(sample_trips)
+
         return creator
 
     @staticmethod
@@ -72,7 +79,7 @@ class Trip:
 
     @staticmethod
     def trips_using_od_file(path):
-        return Trip.from_matrix(import_od(path))
+        return Trip.get_trips(import_od(path))
 
     @staticmethod
     def reset_trips(trips, randomize_factor=0):
@@ -85,29 +92,10 @@ class Trip:
             trip.count = max(0, int(trip.demand * (1 - randomize_factor + 2 * randomize_factor * random.random())))
 
     @staticmethod
-    def get_trips(srcdest):
+    def get_trips(srcdest: Iterable[Iterable[str | int]]) -> List['Trip']:
         trips = list()
         for i, (source, dest, demand) in enumerate(srcdest):
-            trips.append(
-                Trip(
-                    number=i,
-                    start=int(source),
-                    destination=int(dest),
-                    progress=0,
-                    prev_node=None,
-                    next_node=int(source),
-                    time_to_next=0,
-                    edge_time=0,
-                    demand=1,
-                    count=1
-                )
-            )
-        return trips
-
-    @staticmethod
-    def from_matrix(matrix):
-        trips = list()
-        for i, (source, dest, demand) in enumerate(matrix):
+            demand = int(float(demand))
             if demand > 0:
                 trips.append(
                     Trip(
@@ -119,8 +107,14 @@ class Trip:
                         next_node=int(source),
                         time_to_next=0,
                         edge_time=0,
-                        demand=int(demand),
-                        count=int(demand)
+                        demand=demand,
+                        count=demand
                     )
                 )
         return trips
+
+    @staticmethod
+    def using_csv_file(path):
+        with open(path, 'r') as f:
+            sample_trips = [line.rstrip().split(',') for line in f.readlines()]
+            return Trip.get_trips(sample_trips)

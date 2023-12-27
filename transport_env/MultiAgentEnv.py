@@ -99,7 +99,7 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
                     trip.destination,
                     weight=lambda u, v, _: np.maximum(0, self.get_travel_time(u, v, on_edge[(u, v)]) + perturbed[(u, v)])
                 )
-                path_weights = [self.get_travel_time(path[i], path[i+1], on_edge[(path[i], path[i+1])]) + perturbed[(path[i], path[i+1])] for i in range(len(path) - 1)]
+                path_weights = [self.get_travel_time(path[i], path[i+1], on_edge[(path[i], path[i+1])]) for i in range(len(path) - 1)]
                 original_path = nx.shortest_path(
                     self.base,
                     trip.next_node,
@@ -169,14 +169,12 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
             reward = component_time_diff
         elif self.config['rewarding_rule'] == 'step_count':
             reward = vehicles_in_component
-        elif self.config['rewarding_rule'] == 'normalized':
-            mean = np.load(f'{self.base_path}/reward_mean_fixed.npy')
-            var = np.load(f'{self.base_path}/reward_var_fixed.npy')
-            reward = (vehicles_in_component - mean) / (var + 1e-8)
         elif self.config['rewarding_rule'] == 'proportional':
             reward = vehicles_in_component / self.max_number_of_vehicles
         elif self.config['rewarding_rule'] == 'arrived':
             reward = -arrived_vehicles
+        elif self.config['rewarding_rule'] == 'mixed':
+            reward = (vehicles_in_component + component_time_diff) / self.max_number_of_vehicles
         else:
             raise Exception(f'Rewarding rule {self.config["rewarding_rule"]} not implemented.')
 

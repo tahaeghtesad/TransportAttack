@@ -3,6 +3,7 @@ import random
 from datetime import datetime
 
 import networkx as nx
+import numpy as np
 from matplotlib import pyplot as plt
 
 '''
@@ -25,12 +26,11 @@ def create_grid_graph_gre(
         columns,
         p=0.6057,
         q=0.3162,
-        capacity_mean=10247.206327210528, capacity_std=7310.082537530922,
-        free_flow_time_mean=4.131578947368421, free_flow_time_std=1.7194101288336459,
-        b_mean=0.15, b_std=0.0,
-        power_mean=4.0, power_std=0.0,
+        capacity_mean=9.014490914785046, capacity_std=0.6349776867781077,
+        free_flow_time_mean=1.3365527819035248, free_flow_time_std=0.4068261990880405,
+        b_mean=-1.8971199848858813, b_std=0.0,
+        power_mean=1.3862943611198908, power_std=0.0,
 ):
-
     G = nx.grid_2d_graph(rows, columns, create_using=nx.DiGraph)
     for edge in list(G.edges):
         if edge[0][0] == 0 or edge[0][0] == rows - 1 or edge[0][1] == 0 or edge[0][1] == columns - 1:
@@ -59,29 +59,53 @@ def create_grid_graph_gre(
                 G.add_edge(node, neighbor)
 
     for edge in G.edges:
-        G.edges[edge]['capacity'] = max(random.gauss(capacity_mean, capacity_std), 1)
-        G.edges[edge]['free_flow_time'] = max(random.gauss(free_flow_time_mean, free_flow_time_std), 1)
-        G.edges[edge]['b'] = max(random.gauss(b_mean, b_std), 0)
-        G.edges[edge]['power'] = max(random.gauss(power_mean, power_std), 0)
+        G.edges[edge]['capacity'] = math.exp(random.gauss(capacity_mean, capacity_std))
+        G.edges[edge]['free_flow_time'] = math.exp(random.gauss(free_flow_time_mean, free_flow_time_std))
+        G.edges[edge]['b'] = math.exp(random.gauss(b_mean, b_std))
+        G.edges[edge]['power'] = math.exp(random.gauss(power_mean, power_std))
 
     mapping = {(i, j): i * columns + j + 1 for i, j in G.nodes()}
     G = nx.relabel_nodes(G, mapping)
     return G
 
 
-if __name__ == '__main__':
+def get_trips(graph: nx.DiGraph, trip_size_mean=6.106722990776694, trip_size_std=0.9312653933756303):
+    trips = []
+    for i in graph.nodes:
+        for j in graph.nodes:
+            if i != j:
+                trips.append((i, j, math.exp(random.gauss(trip_size_mean, trip_size_std))))
+    return trips
 
-    rows = 6
-    columns = 8
 
-    graph = create_grid_graph_gre(rows, columns)
-    while nx.number_strongly_connected_components(graph) != 1:
-        graph = create_grid_graph_gre(0, rows, columns)
-        print('retry')
-    name = f'GRE-{rows}x{columns}-{datetime.now().strftime("%Y%m%d%H%M%S%f")}.edgelist'
-    nx.write_edgelist(graph, f'TransportationNetworks/Generated/{name}')
+def write_trips(trips, name):
+    with open(f'TransportationNetworks/Generated/{name}.trips', 'w') as fd:
+        for trip in trips:
+            fd.write(f'{trip[0]},{trip[1]},{trip[2]}\n')
+
+
+def gen(rows, columns, p, q):
+    ncomponents = 2
+    tries = 0
+    while ncomponents != 1:
+        graph = create_grid_graph_gre(rows, columns, p, q)
+        ncomponents = nx.number_strongly_connected_components(graph)
+        tries += 1
+    name = f'GRE-{rows}x{columns}-{p:.4f}-{q:.4f}-{datetime.now().strftime("%Y%m%d%H%M%S%f")}'
+    nx.write_edgelist(graph, f'TransportationNetworks/Generated/{name}.edgelist')
+    trips = get_trips(graph)
+    write_trips(trips, name)
     nx.draw_kamada_kawai(graph, with_labels=True)
     plt.show()
+    print(f'tries: {tries}')
     print(name)
     print(f'n_edges: {len(graph.edges)}')
     print(f'n_nodes: {len(graph.nodes)}')
+
+
+if __name__ == '__main__':
+
+    rows = 4
+    columns = 4
+
+    gen(rows, columns, 0.5051, 0.1111)

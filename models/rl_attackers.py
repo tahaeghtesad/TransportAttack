@@ -3,7 +3,8 @@ from abc import abstractmethod
 import numpy as np
 import torch.nn
 
-from models import AttackerInterface, BudgetingInterface, AllocatorInterface, ComponentInterface
+from models import AttackerInterface, BudgetingInterface, AllocatorInterface, ComponentInterface, \
+    NoBudgetAllocatorInterface
 from models.heuristics.budgeting import FixedBudgeting
 
 
@@ -141,3 +142,55 @@ class Attacker(BaseAttacker):
         )
 
         return attacker_stat | allocator_stat | budgeting_stat
+
+
+class NoBudgetAttacker(BaseAttacker):
+    def __init__(
+            self, name, edge_component_mapping,
+            allocator: NoBudgetAllocatorInterface,
+            component: ComponentInterface,
+    ):
+        super().__init__(name=name, edge_component_mapping=edge_component_mapping)
+
+        self.allocator = allocator
+        self.component = component
+
+    def forward(self, observation, deterministic):
+        aggregated = self._aggregate_state(observation)
+        allocations = self.allocator.forward(aggregated, deterministic=deterministic)
+        budgets = torch.sum(allocations, dim=1, keepdim=True)
+        normalized_allocations = torch.nn.functional.normalize(allocations, dim=1, p=1)
+        actions = self.component.forward(observation, budgets, normalized_allocations, deterministic=deterministic)
+        constructed_action = self._construct_action(actions, allocations, budgets)
+        return constructed_action, actions, allocations, budgets
+
+    def _update(self, observation, allocations, budgets, actions, rewards, next_observations, dones, truncateds):
+        with torch.no_grad():
+            next_aggregated = self._aggregate_state(next_observations)
+            next_allocations_times_budget = self.allocator.forward(next_aggregated, deterministic=True)  # TODO is this True?
+            next_allocations = torch.nn.functional.normalize(next_allocations_times_budget, dim=1, p=1)
+            next_budgets = torch.sum(next_allocations_times_budget, dim=1, keepdim=True)
+
+        attacker_stat = self.component.update(
+            states=observation,
+            actions=actions,
+            budgets=budgets,
+            allocations=allocations,
+            next_states=next_observations,
+            next_budgets=next_budgets,
+            next_allocations=next_allocations,
+            rewards=rewards,
+            dones=dones,
+            truncateds=truncateds
+        )
+
+        allocator_stat = self.allocator.update(
+            aggregated_states=next_aggregated,
+            allocations=allocations * budgets,
+            rewards=torch.sum(rewards, dim=1, keepdim=True),
+            next_aggregated_states=next_aggregated,
+            dones=dones,
+            truncateds=truncateds,
+        )
+
+        return attacker_stat | allocator_stat

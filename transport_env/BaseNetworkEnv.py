@@ -39,7 +39,7 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
             self.base = BaseTransportationNetworkEnv.gen_network(**config['network'])
         elif config['network']['method'] == 'edge_list':
             self.base = nx.read_edgelist(
-                f'{base_path}/TransportationNetworks/{config["network"]["file"]}',
+                f'{base_path}/TransportationNetworks/Generated/{config["network"]["file"]}.edgelist',
                 create_using=nx.DiGraph,
                 data=True,
                 nodetype=int,
@@ -48,15 +48,17 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
             raise Exception(f'Unknown network method: {config["network"]["method"]}'
                             f', available methods: network_file, generate')
 
-        if self.config['trips']['type'] == 'trips_file':
+        if config['network']['method'] == 'edge_list':
+            self.base_trips = Trip.using_csv_file(f'{base_path}/TransportationNetworks/Generated/{config["network"]["file"]}.trips')
+        elif self.config['trips']['type'] == 'trips_file':
             city = self.config['network']['city']
             self.base_trips = Trip.trips_using_od_file(f'{base_path}/TransportationNetworks/{city}/{city}_trips.tntp')
         elif self.config['trips']['type'] == 'trips_file_demand':
-            self.trips = Trip.using_demand_file(f'{base_path}/traffic_data/sf_demand.txt', 'top', 10)(self.base)
+            self.base_trips = Trip.using_demand_file(f'{base_path}/traffic_data/sf_demand.txt', 'top', 10)(self.base)
         elif self.config['trips']['type'] == 'deterministic':
-            self.trips: List[Trip] = Trip.deterministic_test_trip_creator(self.config['trips']['count'])(self.base)
+            self.base_trips: List[Trip] = Trip.deterministic_test_trip_creator(self.config['trips']['count'])(self.base)
         elif self.config['trips']['type'] == 'random':
-            self.trips: List[Trip] = Trip.random_trip_creator(self.config['trips']['count'])(self.base)
+            self.base_trips: List[Trip] = Trip.random_trip_creator(self.config['trips']['count'])(self.base)
         else:
             raise Exception(f'Unknown trip type: {self.config["trips"]["type"]}')
 
@@ -73,13 +75,21 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
         self.logger.info(f'Max Number of Vehicles: {self.max_number_of_vehicles}')
         self.logger.info(f'Total Number of Vehicles: {self.total_number_of_vehicles}')
 
+    @property
+    def num_edges(self):
+        return self.base.number_of_edges()
+
+    @property
+    def num_nodes(self):
+        return self.base.number_of_nodes()
+
     def render(self, mode="human"):
         raise NotImplementedError("What are you trying to render?")
 
     def reset(
             self,
     ):
-        self.__reset_trips(randomize_factor=self.config['trips']['randomize_factor'])
+        self.__reset_trips(randomize_factor=self.config['network']['randomize_factor'])
 
         self.initialized = True
         self.finished = False
