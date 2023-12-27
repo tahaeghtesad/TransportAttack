@@ -536,7 +536,7 @@ class NoBudgetDeterministicActor(CustomModule):
 
 
 class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
-    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, target_allocation_noise_scale, noise: DecayingNoiseInterface, epsilon: EpsilonInterface):
+    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, target_allocation_noise_scale, actor_update_steps, noise: DecayingNoiseInterface, epsilon: EpsilonInterface):
         super().__init__(name='TD3NoBudgetAllocator')
 
         self.edge_component_mapping = edge_component_mapping
@@ -549,6 +549,8 @@ class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
         self.noise = noise
         self.epsilon = epsilon
         self.target_allocation_noise_scale = target_allocation_noise_scale
+        self.actor_update_steps = actor_update_steps
+        self.training_step = 0
 
         self.actor = NoBudgetDeterministicActor(self.n_components, self.n_features, self.actor_lr)
         self.target_actor = NoBudgetDeterministicActor(self.n_components, self.n_features, self.actor_lr)
@@ -605,29 +607,36 @@ class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
         critic_loss_1.backward()
         self.critic_1.optimizer.step()
 
+        stats = {
+            'allocator/q_loss': critic_loss.detach().cpu().item(),
+            'allocator/q_min': q_values.min().detach().cpu().item(),
+            'allocator/q_max': q_values.max().detach().cpu().item(),
+            'allocator/q_mean': q_values.mean().detach().cpu().item(),
+            'allocator/rewards': rewards.max().detach().cpu().item(),
+            'allocator/r2': max(r2_score(target_q_values, q_values).detach().cpu().item(), -1),
+            'allocator/noise': self.noise.get_current_noise().detach().cpu().item(),
+            'allocator/epsilon': self.epsilon.get_current_epsilon().detach().cpu().item(),
+        }
+
         # Update actor
-        current_action = self.actor.forward(aggregated_states)
-        current_q_values = self.critic.forward(aggregated_states, current_action)
+        self.training_step += 1
+        if self.training_step % self.actor_update_steps == 0:
+            current_action = self.actor.forward(aggregated_states)
+            current_q_values = self.critic.forward(aggregated_states, current_action)
 
-        actor_loss = - current_q_values.mean()
+            actor_loss = - current_q_values.mean()
 
-        self.actor.optimizer.zero_grad()
-        actor_loss.backward()
-        self.actor.optimizer.step()
+            self.actor.optimizer.zero_grad()
+            actor_loss.backward()
+            self.actor.optimizer.step()
+
+            stats |= {
+                'allocator/a_val': -actor_loss.detach().cpu().item(),
+            }
 
         # Update target networks
         soft_sync(self.target_critic, self.critic, self.tau)
         soft_sync(self.target_actor, self.actor, self.tau)
         soft_sync(self.target_critic_1, self.critic_1, self.tau)
 
-        return {
-            'allocator/q_loss': critic_loss.detach().cpu().item(),
-            'allocator/q_min': q_values.min().detach().cpu().item(),
-            'allocator/q_max': q_values.max().detach().cpu().item(),
-            'allocator/q_mean': q_values.mean().detach().cpu().item(),
-            'allocator/rewards': rewards.max().detach().cpu().item(),
-            'allocator/a_val': -actor_loss.detach().cpu().item(),
-            'allocator/r2': max(r2_score(target_q_values, q_values).detach().cpu().item(), -1),
-            'allocator/noise': self.noise.get_current_noise().detach().cpu().item(),
-            'allocator/epsilon': self.epsilon.get_current_epsilon().detach().cpu().item(),
-        }
+        return stats

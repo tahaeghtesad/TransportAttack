@@ -109,3 +109,17 @@ class EpsilonInterface(CustomModule):
     def get_current_epsilon(self):
         raise NotImplementedError()
 
+
+class DetectorInterface(CustomModule):
+
+    @abstractmethod
+    def __init__(self, name):
+        super().__init__(name)
+
+    @abstractmethod
+    def forward(self, edge_travel_times, deterministic):
+        raise NotImplementedError()
+
+    @abstractmethod
+    def update(self, edge_travel_times, decision, next_edge_travel_times, rewards, dones):
+        raise NotImplementedError()

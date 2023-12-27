@@ -200,6 +200,15 @@ class FixedBudgetNetworkedWideTD3(FixedBudgetNetworkedWideDDPG):
         loss.backward()
         self.critic_2.optimizer.step()
 
+        stats = {
+            'attacker/q_loss': loss.detach().cpu().numpy().item(),
+            'attacker/q_max': target_value.max().cpu().numpy().item(),
+            'attacker/q_min': target_value.min().cpu().numpy().item(),
+            'attacker/q_mean': target_value.mean().cpu().numpy().item(),
+            'attacker/r2': r2_score(target_value, current_value).detach().cpu().numpy().item(),
+            'attacker/noise': self.noise.get_current_noise().detach().cpu().numpy().item()
+        }
+
         if self.last_actor_update % self.actor_update_interval == 0:
 
             current_action = self.actor.forward(observation, budgets)
@@ -212,16 +221,13 @@ class FixedBudgetNetworkedWideTD3(FixedBudgetNetworkedWideDDPG):
 
             soft_sync(self.target_actor, self.actor, self.tau)
 
+            stats |= {
+                'actor_loss': actor_loss.detach().cpu().numpy().item(),
+            }
+
         self.last_actor_update += 1
 
         soft_sync(self.target_critic, self.critic, self.tau)
         soft_sync(self.target_critic_2, self.critic_2, self.tau)
 
-        return {
-            'attacker/q_loss': loss.detach().cpu().numpy().item(),
-            'attacker/q_max': target_value.max().cpu().numpy().item(),
-            'attacker/q_min': target_value.min().cpu().numpy().item(),
-            'attacker/q_mean': target_value.mean().cpu().numpy().item(),
-            'attacker/r2': r2_score(target_value, current_value).detach().cpu().numpy().item(),
-            'attacker/noise': self.noise.get_current_noise().detach().cpu().numpy().item()
-        }
+        return stats

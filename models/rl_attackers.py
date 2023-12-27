@@ -36,6 +36,7 @@ class BaseAttacker(AttackerInterface):
         truncateds = torch.from_numpy(np.array(truncateds)).float().to(self.device).unsqueeze(dim=1)
         return self._update(observation, allocations, budgets, action, reward, next_observation, done, truncateds)
 
+    @abstractmethod
     def _update(self, observation, allocations, budgets, action, reward, next_observation, done, truncateds):
         raise NotImplementedError('Should not be called in base class')
 

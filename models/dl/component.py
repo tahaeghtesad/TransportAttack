@@ -546,7 +546,7 @@ class PPOComponent(ComponentInterface):
 
 class TD3Component(DDPGComponent):
 
-    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise, target_action_noise_scale) -> None:
+    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise, target_action_noise_scale, actor_update_steps) -> None:
         super().__init__(edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise)
 
         self.target_action_noise_scale = target_action_noise_scale
@@ -564,6 +564,8 @@ class TD3Component(DDPGComponent):
         ])
 
         hard_sync(self.target_critics_1, self.critics_1)
+
+        self.training_step = 0
 
     def forward_critic_1(self, states, budgets, allocations, actions):
         return self.__forward_critic(self.critics_1, states, budgets, allocations, actions)
@@ -646,3 +648,9 @@ class TD3Component(DDPGComponent):
         )
 
         return stat
+
+    def __update_actors(self, index, states, allocations, budgets):
+        self.training_step += 1
+        if self.training_step % self.actor_update_steps == 0:
+            return super().__update_actors(index, states, allocations, budgets)
+        return dict()
