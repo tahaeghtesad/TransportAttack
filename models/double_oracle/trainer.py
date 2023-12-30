@@ -1,31 +1,33 @@
-import logging
 import random
+from typing import List
 
 import numpy as np
-from sklearn.metrics import confusion_matrix
+import torch
 from tqdm import tqdm
 
-from models.attack_heuristics import Random
-from models.dl.classifier import Classifier
-from models.dl.hmaddpg import MADDPGModel
-from util.graphing import create_roc_curve
+from models import CustomModule
+from models.attack_heuristics import Zero
+from models.dl.allocators import TD3NoBudgetAllocator
+from models.dl.component import TD3Component
+from models.dl.detectors import DoubleDQNDetector, BaseDetector
+from models.dl.epsilon import DecayEpsilon
+from models.dl.noise import OUActionNoise
+from models.rl_attackers import NoBudgetAttacker, BaseAttacker
+from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
 from util.math import solve_lp
-from util.rl.experience_replay import ExperienceReplay
-from util.rl.exploration import OUActionNoise, DecayEpsilon
-from torch.utils import tensorboard as tb
+from util.rl.experience_replay import ExperienceReplay, BasicExperienceReplay
+from util.torch.writer import TBStatWriter
 
 
-class Trainer:
+class Trainer(CustomModule):
 
-    def __init__(self, config, env, device) -> None:
-        super().__init__()
-        self.logger = logging.getLogger('Trainer')
-        self.config = config
+    def __init__(self, config, env: DynamicMultiAgentTransportationNetworkEnvironment) -> None:
+        super().__init__('DOTrainer')
         self.env = env
-        self.device = device
+        self.config = config
 
-        self.attacker_strategy_sets = []
-        self.defender_strategy_sets = []
+        self.attacker_strategy_sets: List[BaseAttacker] = []
+        self.defender_strategy_sets: List[BaseDetector] = []
 
         # Rows are the defender, columns are the attacker. Values are the payoffs for the defender.
         self.payoff_table = []
@@ -56,111 +58,96 @@ class Trainer:
         assert len(self.defender_strategy_sets) == len(probabilities)
         index = len(self.attacker_strategy_sets)
 
-        writer = tb.SummaryWriter(f'logs/{self.config["run_id"]}/attacker_{index}/')
-        attacker_model = MADDPGModel(self.config, self.env, self.device)
+        writer = TBStatWriter(f'logs/{self.config["run_id"]}/attacker_{index}/')
+        attacker_model = NoBudgetAttacker(
+            name='TD3NoBudgetAttacker',
+            edge_component_mapping=self.env.edge_component_mapping,
+            allocator=TD3NoBudgetAllocator(
+                self.env.edge_component_mapping,
+                5,
+                self.config['attacker_config']['high_level']['critic_lr'],
+                self.config['attacker_config']['high_level']['actor_lr'],
+                self.config['attacker_config']['high_level']['tau'],
+                self.config['attacker_config']['high_level']['gamma'],
+                self.config['attacker_config']['high_level']['target_allocation_noise_scale'],
+                self.config['attacker_config']['high_level']['actor_update_steps'],
+                noise=OUActionNoise(
+                    0,
+                    self.config['attacker_config']['high_level']['noise']['scale'],
+                    self.config['attacker_config']['high_level']['noise']['target'],
+                    self.config['attacker_config']['high_level']['noise']['decay']
+                ),
+                epsilon=DecayEpsilon(
+                    self.config['attacker_config']['high_level']['epsilon']['start'],
+                    self.config['attacker_config']['high_level']['epsilon']['end'],
+                    self.config['attacker_config']['high_level']['epsilon']['decay']
+                ),
+            ),
+            component=TD3Component(
+                self.env.edge_component_mapping,
+                2,
+                self.config['attacker_config']['low_level']['critic_lr'],
+                self.config['attacker_config']['low_level']['actor_lr'],
+                self.config['attacker_config']['low_level']['tau'],
+                self.config['attacker_config']['low_level']['gamma'],
+                OUActionNoise(
+                    0,
+                    self.config['attacker_config']['low_level']['noise']['scale'],
+                    self.config['attacker_config']['low_level']['noise']['target'],
+                    self.config['attacker_config']['low_level']['noise']['decay']
+                ),
+                self.config['attacker_config']['low_level']['target_allocation_noise_scale'],
+                self.config['attacker_config']['low_level']['actor_update_steps'],
+            )
+        )
         replay_buffer = ExperienceReplay(self.config['rl_config']['buffer_size'],
                                          self.config['rl_config']['batch_size'])
         episode_reward = np.zeros((4,))
         global_step = 0
 
-        noise = OUActionNoise(
-            theta=0.15,
-            mean=0.0,
-            std_deviation=self.config['rl_config']['noise']['std_deviation'],
-            dt=0.01,
-            target_scale=self.config['rl_config']['noise']['target_scale'],
-            anneal=self.config['rl_config']['noise']['anneal'],
-            shape=self.env.base.number_of_edges()
-        )
-
-        epsilon = DecayEpsilon(
-            epsilon_start=self.config['rl_config']['exploration']['start'],
-            epsilon_end=self.config['rl_config']['exploration']['end'],
-            epsilon_decay=self.config['rl_config']['exploration']['decay'],
-        )
-
         for episode in (pbar := tqdm(range(self.config['rl_config']['epochs']))):
             done = False
             truncated = False
             obs = self.env.reset()
-            cumulative_rewards = []
+            rewards = []
             step_count = 0
-            classifier = self.defender_strategy_sets[
+            detector = self.defender_strategy_sets[
                 np.random.choice(len(self.defender_strategy_sets), p=probabilities)]
             detected_at_step = 1000
-            detected = False
 
-            while not done and not truncated and not detected:
+            while not done and not truncated:
                 step_count += 1
                 global_step += 1
 
-                action, budget, magnitude = attacker_model.forward(obs)
-
-                if epsilon():
-                    action = Random(
-                        (self.env.base.number_of_edges(),),
-                        norm=1,
-                        epsilon=np.exp(np.random.normal(1.1, 0.3)),
-                        frac=0.5,
-                        selection='discrete'
-                    ).predict(obs)
-
-                action += noise()
-                action = np.clip(action, 0, None)
-
-                true_action_budget = np.sum(action)
+                constructed_action, action, allocation, budget = attacker_model.forward(obs, False)
 
                 perturbed_edge_travel_times = self.env.get_travel_times_assuming_the_attack(action)
-                detected = classifier.forward_single(perturbed_edge_travel_times)
-                # detected = False
+                detected = detector.forward_single(perturbed_edge_travel_times, True)
+
                 if detected:
                     detected_at_step = step_count
                     value, cumulative_reward, steps = self.__get_state_values_assuming_no_action()
-                    replay_buffer.add(obs, action, np.append(value, [1.0]), obs, False)
-                    cumulative_rewards.append(cumulative_reward)
+                    replay_buffer.add(obs, allocation, budget, action, value, obs, True, False)
+                    rewards.append(cumulative_reward)
                     step_count += steps
                     global_step += steps
                     writer.add_scalar('env/detected_value', np.sum(value), global_step)
                 else:
                     next_obs, reward, done, info = self.env.step(
-                        action
+                        constructed_action
                     )
-
                     truncated = info.get('TimeLimit.truncated', False)
-                    replay_buffer.add(obs, action, np.append(reward, [0]), next_obs, done)
+                    replay_buffer.add(obs, allocation, budget, action, reward, next_obs, done, truncated)
                     obs = next_obs
-                    cumulative_rewards.append(reward)
+                    rewards.append(reward)
 
                 writer.add_scalar('env/buffer_size', replay_buffer.size(), global_step)
-
-                stats = []
 
                 if replay_buffer.size() > self.config['rl_config']['batch_size']:
                     for _ in range(self.config['rl_config']['updates']):
                         states, actions, rewards, next_states, dones = replay_buffer.get_experiences()
-                        stat = attacker_model.update_multi_agent(states, actions, next_states, rewards, dones)
-                        stats.append(stat)
-
-                    for i in range(self.env.n_components):
-                        writer.add_scalar(f'loss/critic_{i}', np.mean([stat['q_loss'][i] for stat in stats]), global_step)
-                        writer.add_scalar(f'min_q/critic_{i}', np.mean([stat['q_min'][i] for stat in stats]), global_step)
-                        writer.add_scalar(f'max_q/critic_{i}', np.mean([stat['q_max'][i] for stat in stats]), global_step)
-                        writer.add_scalar(f'mean_q/critic_{i}', np.mean([stat['q_mean'][i] for stat in stats]), global_step)
-                        writer.add_scalar(f'r2/critic_{i}', np.mean([stat['q_r2'][i] for stat in stats]), global_step)
-                        writer.add_scalar(f'a_loss/actor_{i}', np.mean([stat['a_loss'][i] for stat in stats]), global_step)
-
-                    writer.add_scalar(f'high_level/loss', np.mean([stat['high_level_loss'] for stat in stats]), global_step)
-                    writer.add_scalar(f'high_level/r2', np.mean([stat['high_level_r2'] for stat in stats]), global_step)
-                    writer.add_scalar(f'high_level/min_q', np.mean([stat['high_level_min_q'] for stat in stats]), global_step)
-                    writer.add_scalar(f'high_level/max_q', np.mean([stat['high_level_max_q'] for stat in stats]), global_step)
-                    writer.add_scalar(f'high_level/mean_q', np.mean([stat['high_level_mean_q'] for stat in stats]), global_step)
-                    writer.add_scalar(f'high_level/a_loss', np.mean([stat['high_level_a_loss'] for stat in stats]), global_step)
-
-                writer.add_scalar(f'env/noise', noise.get_current_noise(), global_step)
-                writer.add_scalar(f'env/epsilon', epsilon.get_current_epsilon(), global_step)
-                writer.add_scalar(f'env/magnitude', magnitude, global_step)
-
-                writer.add_scalar(f'env/true_action_budget', true_action_budget, global_step)
+                        stats = attacker_model.update_multi_agent(states, actions, next_states, rewards, dones)
+                        writer.add_stats(stats, global_step)
 
                 for i in range(self.env.n_components):
                     writer.add_scalar(f'budgets/budget_{i}', np.sum(action[self.env.edge_component_mapping[i]]),
@@ -173,139 +160,135 @@ class Trainer:
                 f'Training Attacker |'
                 f' ep: {episode} |'
                 f' Rewards {episode_reward}:{np.sum(episode_reward):10.3f} |'
-                f' Noise {noise.get_current_noise():10.3f} |'
-                f' Exploration {epsilon.get_current_epsilon():10.3f} |'
                 f' Detected {min(detected_at_step, self.config["env_config"]["horizon"]):10d} |'
             )
 
-            episode_reward = np.sum(np.array(cumulative_rewards), axis=0)
             for i in range(self.env.n_components):
-                writer.add_scalar(f'rewards/episode_reward_{i}', episode_reward[i] / self.config['env_config']['reward_multiplier'], global_step)
-            writer.add_scalar(f'env/episode_reward', np.sum(episode_reward) / self.config['env_config']['reward_multiplier'], global_step)
+                writer.add_scalar(f'rewards/episode_reward_{i}', episode_reward[i], global_step)
             writer.add_scalar(f'env/step_count', step_count, global_step)
-            writer.add_scalar(f'env/detected_at_step', min(detected_at_step, self.config['env_config']['horizon']), global_step)
 
         attacker_model.save(f'logs/{self.config["run_id"]}/weights/attacker_{index}.pt')
         return attacker_model
 
-    def __get_classifier_data(self, probabilities, epochs):
+    def train_detector(self, probabilities):  # returns defender strategy
         assert len(self.attacker_strategy_sets) == len(probabilities)
+        detector_model = DoubleDQNDetector(
+            self.env.base.number_of_edges(),
+            1,
+            self.config['detector_config']['gamma'],
+            self.config['detector_config']['tau'],
+            self.config['detector_config']['lr'],
+        )
+        index = len(self.defender_strategy_sets)
+        writer = TBStatWriter(f'logs/{self.config["run_id"]}/defender_{index}/')
+        replay_buffer = BasicExperienceReplay(
+            self.config['rl_config']['buffer_size'],
+            self.config['rl_config']['batch_size'])
 
-        edge_travel_times = []
-        labels = []
-
-        for episode in tqdm(range(epochs), desc='Collecting Data'):
+        global_step = 0
+        for episode in (pbar := tqdm(range(self.config['rl_config']['epochs']))):
+            attacker_present = random.random() < self.config['detector_config']['attacker_present_probability']
+            zero_attacker = Zero(self.env.edge_component_mapping)
+            attacker_model = self.attacker_strategy_sets[
+                        np.random.choice(len(self.attacker_strategy_sets), p=probabilities)]
             done = False
             truncated = False
             obs = self.env.reset()
             step_count = 0
-            attacker_model = self.attacker_strategy_sets[
-                np.random.choice(len(self.attacker_strategy_sets), p=probabilities)]
+            episode_rewards = []
+            detected_at_step = 1000 if attacker_present else -1
 
             while not done and not truncated:
                 step_count += 1
-                perturbed = False
-
-                if random.random() < 0.4:
-                    action, budget, magnitude = attacker_model.forward(obs)
-                    perturbed = True
-                else:
-                    action = np.zeros((self.env.base.number_of_edges(),))
-
-                obs, reward, done, info = self.env.step(action)
-
-                truncated = info.get('TimeLimit.truncated', False)
-                perturbed_edge_travel_times = info.get('perturbed_edge_travel_times')
-                edge_travel_times.append(perturbed_edge_travel_times)
-                labels.append(perturbed)
-
-        return edge_travel_times, labels
-
-    def train_classifier(self, probabilities):  # returns defender strategy
-        assert len(self.attacker_strategy_sets) == len(probabilities)
-        classifier = Classifier(self.config, self.device,
-                                (self.env.base.number_of_edges(),))
-        index = len(self.defender_strategy_sets)
-        writer = tb.SummaryWriter(f'logs/{self.config["run_id"]}/defender_{index}/')
-
-        edge_travel_times, labels = self.__get_classifier_data(probabilities, self.config['classifier_config']['collection_epochs'])
-
-        global_step = 0
-        for episode in (pbar := tqdm(range(self.config['classifier_config']['training_epochs']))):
-            for loss in classifier.update_batched(edge_travel_times, labels):
-                writer.add_scalar('defender/loss', loss['mean'], global_step)
-                pbar.set_description(f'Training Classifier | loss: {loss["mean"]:10.3f}')
                 global_step += 1
 
-        classifier.save(f'logs/{self.config["run_id"]}/weights/classifier_{index}.pt')
+                attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else zero_attacker.forward_single(obs, True)[0]
+                perturbed_edge_travel_times = self.env.get_travel_times_assuming_the_attack(attacker_action)
+                detected = detector_model.forward_single(perturbed_edge_travel_times, False)
+                detector_penalty = 0
 
-        edge_travel_times, labels = self.__get_classifier_data(probabilities, self.config['do_config']['testing_epochs'])
+                attack_correctly_detected = detected and attacker_present
+                false_positive = detected and not attacker_present
 
-        create_roc_curve(
-            classifier.forward(edge_travel_times),
-            labels,
-            f'Classifier {index} ROC',
-            f'logs/{self.config["run_id"]}/roc_curves/classifier_{index}.tikz',
-            show=True
-        )
+                if attack_correctly_detected: # We neutralize the attack
+                    attacker_present = False
+                    detected_at_step = step_count
+                if false_positive: # We penalize the detector
+                    detector_penalty = self.config['detector_config']['rho']
 
-        return classifier
+                obs, reward, done, info = self.env.step(
+                    attacker_action if attacker_present else zero_attacker.forward_single(obs, True)[0]
+                )
 
-    def play(self, attacker, defender):
+                truncated = info.get('TimeLimit.truncated', False)
+                detector_reward = sum(reward) - detector_penalty
 
-        edge_travel_times = []
-        labels = []
-        predicted_labels = []
-        episode_rewards = []
+                episode_rewards.append(detector_reward)
+                next_attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else zero_attacker.forward_single(obs, True)[0]
+                next_detector_observation = self.env.get_travel_times_assuming_the_attack(next_attacker_action)
 
-        for episode in range(self.config['do_config']['testing_epochs']):
+                replay_buffer.add(
+                    perturbed_edge_travel_times,
+                    detected,
+                    detector_reward,
+                    next_detector_observation,
+                    done,
+                    truncated
+                )
+
+                if replay_buffer.size() > self.config['rl_config']['batch_size']:
+                    states, actions, rewards, next_states, dones, truncateds = replay_buffer.get_experiences()
+                    stats = detector_model.update(states, actions, next_states, rewards, dones)
+                    writer.add_stats(stats, global_step)
+
+            writer.add_scalar('env/detected_at_step', detected_at_step, global_step)
+            writer.add_scalar('env/episode_reward', np.sum(episode_rewards), global_step)
+            writer.add_scalar('env/step_count', step_count, global_step)
+            pbar.set_description(f'Training Detector | ep: {episode} | Rewards {np.sum(episode_rewards):10.3f} | detected {detected_at_step:10d} |')
+
+        torch.save(detector_model, f'logs/{self.config["run_id"]}/weights/defender_{index}.tar')
+        return detector_model
+
+    def play(self, attacker_model, detector_model):
+
+        detector_rewards = []
+        attacker_rewards = []
+        global_step = 0
+
+        for episode in (pbar := tqdm(range(self.config['do_config']['testing_epochs']))):
 
             done = False
             truncated = False
             obs = self.env.reset()
             step_count = 0
-            rewards = 0
-            detected = False
+            attacker_present = random.random() < self.config['detector_config']['attacker_present_probability']
 
-            while not done and not truncated and not detected:
+            while not done and not truncated:
                 step_count += 1
-                if random.random() < 0.3:
-                    action, budget, magnitude = attacker.forward(obs)
-                    labels.append(1)
-                else:
-                    action = np.zeros((self.env.base.number_of_edges(),))
-                    labels.append(0)
+                global_step += 1
 
-                perturbed_edge_travel_times = self.env.get_travel_times_assuming_the_attack(action)
-                edge_travel_times.append(perturbed_edge_travel_times)
-                detected = defender.forward_single(perturbed_edge_travel_times)
-                predicted_labels.append(detected)
+                attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else np.zeros(
+                    (self.env.base.number_of_edges(),))
+                perturbed_edge_travel_times = self.env.get_travel_times_assuming_the_attack(attacker_action)
+                detected = detector_model.forward_single(perturbed_edge_travel_times, False)
+                detector_penalty = 0
 
-                if not detected:
-                    obs, reward, done, info = self.env.step(action)
-                    truncated = info.get('TimeLimit.truncated', False)
-                    rewards += sum(reward)
-                else:
-                    value, cumulative_reward, steps = self.__get_state_values_assuming_no_action()
-                    rewards += sum(cumulative_reward)
-                    step_count += steps
+                if detected and attacker_present:
+                    attacker_present = False
+                if detected and not attacker_present:
+                    detector_penalty = self.config['detector_config']['rho']
 
-            episode_rewards.append(rewards)
+                obs, reward, done, info = self.env.step(attacker_action if attacker_present else np.zeros(
+                    (self.env.base.number_of_edges(),)))
 
-        average_reward = np.mean(episode_rewards)
-        cm = confusion_matrix(labels, predicted_labels)
-        false_positive = cm[0][1] / sum(cm[0])
-        payoff = - average_reward - false_positive * self.config['classifier_config']['chi']
-        self.logger.info(
-            f'Attacker  vs. Defender |'
-            f' Payoff: {payoff} |'
-            f' FPR: {false_positive} |'
-            f' TPR: {cm[1][1] / sum(cm[1])} |'
-            f' FNR: {cm[1][0] / sum(cm[1])} |'
-            f' TNR: {cm[0][0] / sum(cm[0])} |'
-        )
+                truncated = info.get('TimeLimit.truncated', False)
+                attacker_reward = - sum(reward)
+                detector_reward = - attacker_reward - detector_penalty
 
-        return payoff
+                attacker_rewards.append(attacker_reward)
+                detector_rewards.append(detector_reward)
+
+        return np.mean(attacker_rewards), np.mean(detector_rewards)
 
     def get_attacker_payoff(self, attacker):  # returns a list of payoffs for the defender
         payoffs = []
