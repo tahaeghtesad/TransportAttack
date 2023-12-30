@@ -1,5 +1,6 @@
 from abc import abstractmethod
 
+import numpy as np
 import torch
 
 from models import DetectorInterface, CustomModule
@@ -46,16 +47,16 @@ class BaseDetector(DetectorInterface):
 
     def update(self, edge_travel_times, decisions, next_edge_travel_times, rewards, dones):
         return self._update(
-            torch.from_numpy(edge_travel_times).to(self.device),
-            torch.from_numpy(decisions).to(self.device),
-            torch.from_numpy(next_edge_travel_times).to(self.device),
-            torch.from_numpy(rewards).to(self.device),
-            torch.from_numpy(dones).to(self.device)
+            torch.from_numpy(np.array(edge_travel_times)).float().to(self.device),
+            torch.from_numpy(np.array(decisions)).float().to(self.device),
+            torch.from_numpy(np.array(next_edge_travel_times)).float().to(self.device),
+            torch.from_numpy(np.array(rewards)).float().to(self.device),
+            torch.from_numpy(np.array(dones)).float().to(self.device)
         )
 
     def forward_single(self, edge_travel_time, deterministic):
-        x = torch.unsqueeze(torch.from_numpy(edge_travel_time), dim=0).to(self.device)
-        return self.forward(x, deterministic).cpu().data.numpy()[0][0]
+        x = torch.unsqueeze(torch.unsqueeze(torch.from_numpy(edge_travel_time), dim=0), dim=2).float().to(self.device)
+        return bool(self.forward(x, deterministic).cpu().data.numpy()[0][0].item())
 
     @abstractmethod
     def forward(self, edge_travel_times, deterministic):
@@ -73,7 +74,7 @@ class DoubleDQNDetector(BaseDetector):
         self.n_edges = n_edges
         self.n_features = n_features
         self.lr = lr
-        self.gamma = gamma,
+        self.gamma = gamma
         self.tau = tau
 
         self.model = QCritic(n_features, n_edges, lr)
@@ -83,14 +84,14 @@ class DoubleDQNDetector(BaseDetector):
 
     def forward(self, edge_travel_times, deterministic=True):
         with torch.no_grad():
-            return torch.argmax(self.model(edge_travel_times, deterministic), dim=1, keepdim=True)
+            return torch.argmax(self.model.forward(edge_travel_times), dim=1, keepdim=True)
 
     def _update(self, edge_travel_times, decisions, next_edge_travel_times, rewards, dones):
         with torch.no_grad():
             next_q_values = torch.max(self.target_model.forward(next_edge_travel_times), dim=1, keepdim=True)[0]  # torch.max() returns a tuple (values, indices)
-            target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
+            target_q_values = torch.unsqueeze(rewards, dim=1) + (1 - torch.unsqueeze(dones, dim=1)) * self.gamma * next_q_values
 
-        q_values = self.model.forward(edge_travel_times).gather(dim=1, index=decisions)
+        q_values = self.model.forward(edge_travel_times).gather(dim=1, index=torch.unsqueeze(decisions, dim=1).to(torch.int64))
         loss = torch.nn.functional.mse_loss(q_values, target_q_values)
 
         self.model.optimizer.zero_grad()

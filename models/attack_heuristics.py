@@ -87,6 +87,10 @@ class Zero(BaseHeuristic):
             torch.zeros((n_batch, 1), device=self.device)
         )
 
+    def _update(self, observation, allocations, budgets, action, reward, next_observation, done, truncateds):
+        return dict()
+
+
 # TODO fix these
 # class Random(BaseHeuristic):
 #     def __init__(self, action_shape,

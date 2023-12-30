@@ -550,6 +550,7 @@ class TD3Component(DDPGComponent):
         super().__init__(edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise)
 
         self.target_action_noise_scale = target_action_noise_scale
+        self.actor_update_steps = actor_update_steps
 
         self.critics_1 = torch.nn.ModuleList([
             QCritic(f'Critic_1-{i}', len(edge_component_mapping[i]), n_features, critic_lr) for i

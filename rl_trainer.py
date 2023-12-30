@@ -8,16 +8,15 @@ from datetime import datetime
 
 import numpy as np
 import torch
-from torch.utils import tensorboard as tb
 from tqdm import tqdm
 
-from models import CustomModule
-from models.ddpg_attacker import FixedBudgetNetworkedWideDDPG, FixedBudgetNetworkedWideTD3
+from models.ddpg_attacker import FixedBudgetNetworkedWideTD3
 from models.dl.noise import OUActionNoise
 from models.heuristics.budgeting import FixedBudgeting
 from models.ppo_attacker import FixedBudgetNetworkedWidePPO
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
 from util.rl.experience_replay import TrajectoryExperience, ExperienceReplay
+from util.torch.writer import TBStatWriter
 
 
 def train_single(config, model_creator, mode):
@@ -35,7 +34,7 @@ def train_single(config, model_creator, mode):
     # run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")}-{config["budget"]}-{config["city"]}-{config["model_name"]}'
     # run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")},erf={env_randomize_factor:.5f},a_lr={allocator_actor_lr:.5f},c_lr={allocator_critic_lr:.5f},a_g={allocator_gamma:.5f},a_l={allocator_lam:.5f},a_e={allocator_epsilon:.5f},a_ec={allocator_entropy_coeff:.5f},a_vc={allocator_value_coeff:.5f},a_nu={allocator_n_updates},a_pgc={allocator_policy_grad_clip},a_bs={allocator_batch_size},a_crv={allocator_clip_range_vf},ge={greedy_epsilon:.5f}'
     # run_id = f'{datetime.now().strftime("%Y%m%d%H%M%S%f")},c_lr={critic_lr:.5f},a_lr={actor_lr:.5f},t={tau:.5f},dl={decay_length},ut={update_time}'
-    writer = tb.SummaryWriter(f'{base_path}/{log_name}/{run_id}')
+    writer = TBStatWriter(f'{base_path}/{log_name}/{run_id}')
     os.makedirs(f'{base_path}/{log_name}/{run_id}/weights')
 
     log_handlers = [
@@ -169,26 +168,12 @@ def train_single(config, model_creator, mode):
             if mode == 'off_policy':
                 stats = model.update(*buffer.get_experiences())
 
-                for name, value in stats.items():
-                    if type(value) is list:
-                        writer.add_histogram(name, np.array(value), global_step)
-                    elif type(value) is np.ndarray:
-                        writer.add_histogram(name, value, global_step)
-                    else:
-                        writer.add_scalar(name, value, global_step)
 
                 buffer.reset()
 
         if mode == 'on_policy':
             stats = model.update(*buffer.get_experiences())
-
-            for name, value in stats.items():
-                if type(value) is list:
-                    writer.add_histogram(name, np.array(value), global_step)
-                elif type(value) is np.ndarray:
-                    writer.add_histogram(name, value, global_step)
-                else:
-                    writer.add_scalar(name, value, global_step)
+            writer.add_stats(stats, global_step)
 
             buffer.reset()
 

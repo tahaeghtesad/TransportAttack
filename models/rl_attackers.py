@@ -40,14 +40,6 @@ class BaseAttacker(AttackerInterface):
     def _update(self, observation, allocations, budgets, action, reward, next_observation, done, truncateds):
         raise NotImplementedError('Should not be called in base class')
 
-    # def _aggregate_state(self, states):
-    #     aggregated = torch.empty((states.shape[0], self.n_components, 5), device=self.device)
-    #     for c in range(self.n_components):
-    #         aggregated[:, c, :] = torch.sum(
-    #             states[:, self.edge_component_mapping[c]], dim=1
-    #         )
-    #     return aggregated
-
     def _aggregate_state(self, states):
         aggregated = torch.empty((states.shape[0], self.n_components, 2), device=self.device)
         for c in range(self.n_components):
@@ -67,6 +59,7 @@ class BaseAttacker(AttackerInterface):
 
 
 class FixedBudgetNetworkedWideGreedy(BaseAttacker):
+
     def __init__(self, edge_component_mapping, budget, budget_noise) -> None:
         super().__init__(name='FixedBudgetNetworkedWideGreedy', edge_component_mapping=edge_component_mapping)
         self.budgeting = FixedBudgeting(budget, budget_noise)
@@ -79,6 +72,9 @@ class FixedBudgetNetworkedWideGreedy(BaseAttacker):
 
         # action here is the same as constructed_action
         return actions, actions, allocations, torch.ones((observation.shape[0], 1), device=self.device) * self.budgeting.budget
+
+    def _update(self, observation, allocations, budgets, action, reward, next_observation, done, truncateds):
+        return dict()
 
 
 class Attacker(BaseAttacker):
