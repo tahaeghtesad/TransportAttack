@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import numpy as np
+
 from models.double_oracle.trainer import Trainer
 from models.rl_attackers import FixedBudgetNetworkedWideGreedy
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
@@ -30,7 +32,7 @@ if __name__ == '__main__':
             gamma=0.95,
             buffer_size=100_000,
             batch_size=64,
-            epochs=512,
+            epochs=3072,
         ),
         attacker_config=dict(
             high_level=dict(
@@ -38,7 +40,7 @@ if __name__ == '__main__':
                 actor_lr=1e-3,
                 tau=0.001,
                 gamma=0.99,
-                target_allocation_noise=0.001,
+                target_allocation_noise_scale=0.001,
                 actor_update_steps=2,
                 noise=dict(
                     scale=0.5,
@@ -56,7 +58,7 @@ if __name__ == '__main__':
                 actor_lr=1e-3,
                 tau=0.001,
                 gamma=0.99,
-                target_allocation_noise=0.001,
+                target_allocation_noise_scale=0.001,
                 actor_update_steps=2,
                 noise=dict(
                     scale=0.5,
@@ -75,14 +77,40 @@ if __name__ == '__main__':
             lr=1e-3,
             tau=0.001,
             attacker_present_probability=0.5,
-            rho=5.0,
+            rho=200.0,
+            epsilon=dict(
+                start=1.0,
+                end=0.05,
+                decay=5_000
+            )
         ),
         do_config=dict(
-            testing_epochs=64,
+            testing_epochs=32,
+            iterations=8,
         )
     )
 
     trainer = Trainer(config, env)
 
-    trainer.attacker_strategy_sets.append(FixedBudgetNetworkedWideGreedy(env.edge_component_mapping, 30, 0.005))
-    trainer.train_detector([1.0])
+    attacker_0 = FixedBudgetNetworkedWideGreedy(env.edge_component_mapping, 30, 0.005)
+    trainer.attacker_strategy_sets.append(attacker_0)
+    detector_0 = trainer.train_detector([1.0])
+    trainer.defender_strategy_sets.append(detector_0)
+    attacker_payoff = trainer.get_attacker_payoff(attacker_0)
+    trainer.append_defender_payoffs([p[0] for p in attacker_payoff])
+
+    for do_iteration in range(config['do_config']['iterations']):
+        print(f'DO iteration {do_iteration}')
+        probabilities = trainer.solve_defender()
+        attacker_i = trainer.train_attacker(probabilities)
+        trainer.attacker_strategy_sets.append(attacker_i)
+        payoff = trainer.get_attacker_payoff(attacker_i)
+        trainer.append_attacker_payoffs([p[0] for p in payoff])
+
+        probabilities = trainer.solve_attacker()
+        defender_i = trainer.train_detector(probabilities)
+        trainer.defender_strategy_sets.append(defender_i)
+        payoff = trainer.get_defender_payoff(defender_i)
+        trainer.append_defender_payoffs([p[0] for p in payoff])
+
+        print(f'New MSNE payoff: {sum(trainer.solve_attacker() * np.array(trainer.payoff_table))}')

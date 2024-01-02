@@ -1,3 +1,4 @@
+import os
 import random
 from typing import List
 
@@ -54,7 +55,7 @@ class Trainer(CustomModule):
 
         return state_value, np.sum(immediate_rewards, axis=0), step_count
 
-    def train_attacker(self, probabilities):  # returns attacker strategy
+    def train_attacker(self, probabilities) -> BaseAttacker:  # returns attacker strategy
         assert len(self.defender_strategy_sets) == len(probabilities)
         index = len(self.attacker_strategy_sets)
 
@@ -64,7 +65,7 @@ class Trainer(CustomModule):
             edge_component_mapping=self.env.edge_component_mapping,
             allocator=TD3NoBudgetAllocator(
                 self.env.edge_component_mapping,
-                5,
+                2,
                 self.config['attacker_config']['high_level']['critic_lr'],
                 self.config['attacker_config']['high_level']['actor_lr'],
                 self.config['attacker_config']['high_level']['tau'],
@@ -85,7 +86,7 @@ class Trainer(CustomModule):
             ),
             component=TD3Component(
                 self.env.edge_component_mapping,
-                2,
+                5,
                 self.config['attacker_config']['low_level']['critic_lr'],
                 self.config['attacker_config']['low_level']['actor_lr'],
                 self.config['attacker_config']['low_level']['tau'],
@@ -119,7 +120,7 @@ class Trainer(CustomModule):
                 step_count += 1
                 global_step += 1
 
-                constructed_action, action, allocation, budget = attacker_model.forward(obs, False)
+                constructed_action, action, allocation, budget = attacker_model.forward_single(obs, False)
 
                 perturbed_edge_travel_times = self.env.get_travel_times_assuming_the_attack(action)
                 detected = detector.forward_single(perturbed_edge_travel_times, True)
@@ -144,10 +145,9 @@ class Trainer(CustomModule):
                 writer.add_scalar('env/buffer_size', replay_buffer.size(), global_step)
 
                 if replay_buffer.size() > self.config['rl_config']['batch_size']:
-                    for _ in range(self.config['rl_config']['updates']):
-                        states, actions, rewards, next_states, dones = replay_buffer.get_experiences()
-                        stats = attacker_model.update_multi_agent(states, actions, next_states, rewards, dones)
-                        writer.add_stats(stats, global_step)
+                    observations, allocations, budgets, actions, rewards, next_observations, dones, truncateds = replay_buffer.get_experiences()
+                    stats = attacker_model.update(observations, allocations, budgets, actions, rewards, next_observations, dones, truncateds)
+                    writer.add_stats(stats, global_step)
 
                 for i in range(self.env.n_components):
                     writer.add_scalar(f'budgets/budget_{i}', np.sum(action[self.env.edge_component_mapping[i]]),
@@ -160,17 +160,19 @@ class Trainer(CustomModule):
                 f'Training Attacker |'
                 f' ep: {episode} |'
                 f' Rewards {episode_reward}:{np.sum(episode_reward):10.3f} |'
-                f' Detected {min(detected_at_step, self.config["env_config"]["horizon"]):10d} |'
+                f' Detected {detected_at_step:10d} |'
             )
 
             for i in range(self.env.n_components):
                 writer.add_scalar(f'rewards/episode_reward_{i}', episode_reward[i], global_step)
             writer.add_scalar(f'env/step_count', step_count, global_step)
 
-        attacker_model.save(f'logs/{self.config["run_id"]}/weights/attacker_{index}.pt')
+        weight_path = f'logs/{self.config["run_id"]}/weights'
+        os.makedirs(weight_path, exist_ok=True)
+        torch.save(attacker_model, f'{weight_path}/attacker_{index}.pt')
         return attacker_model
 
-    def train_detector(self, probabilities):  # returns defender strategy
+    def train_detector(self, probabilities) -> BaseDetector:  # returns defender strategy
         assert len(self.attacker_strategy_sets) == len(probabilities)
         detector_model = DoubleDQNDetector(
             self.env.base.number_of_edges(),
@@ -178,6 +180,11 @@ class Trainer(CustomModule):
             self.config['detector_config']['gamma'],
             self.config['detector_config']['tau'],
             self.config['detector_config']['lr'],
+            epsilon=DecayEpsilon(
+                self.config['detector_config']['epsilon']['start'],
+                self.config['detector_config']['epsilon']['end'],
+                self.config['detector_config']['epsilon']['decay']
+            )
         )
         index = len(self.defender_strategy_sets)
         writer = TBStatWriter(f'logs/{self.config["run_id"]}/defender_{index}/')
@@ -210,10 +217,10 @@ class Trainer(CustomModule):
                 attack_correctly_detected = detected and attacker_present
                 false_positive = detected and not attacker_present
 
-                if attack_correctly_detected: # We neutralize the attack
+                if attack_correctly_detected:  # We neutralize the attack
                     attacker_present = False
                     detected_at_step = step_count
-                if false_positive: # We penalize the detector
+                if false_positive:  # We penalize the detector
                     detector_penalty = self.config['detector_config']['rho']
 
                 obs, reward, done, info = self.env.step(
@@ -221,7 +228,7 @@ class Trainer(CustomModule):
                 )
 
                 truncated = info.get('TimeLimit.truncated', False)
-                detector_reward = sum(reward) - detector_penalty
+                detector_reward = - sum(reward) - detector_penalty
 
                 episode_rewards.append(detector_reward)
                 next_attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else zero_attacker.forward_single(obs, True)[0]
@@ -246,10 +253,12 @@ class Trainer(CustomModule):
             writer.add_scalar('env/step_count', step_count, global_step)
             pbar.set_description(f'Training Detector | ep: {episode} | Rewards {np.sum(episode_rewards):10.3f} | detected {detected_at_step:10d} |')
 
-        torch.save(detector_model, f'logs/{self.config["run_id"]}/weights/defender_{index}.tar')
+        weight_path = f'logs/{self.config["run_id"]}/weights'
+        os.makedirs(weight_path, exist_ok=True)
+        torch.save(detector_model, f'{weight_path}/defender_{index}.tar')
         return detector_model
 
-    def play(self, attacker_model, detector_model):
+    def play(self, attacker_model: BaseAttacker, detector_model: BaseDetector) -> (float, float):
 
         detector_rewards = []
         attacker_rewards = []
@@ -270,7 +279,7 @@ class Trainer(CustomModule):
                 attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else np.zeros(
                     (self.env.base.number_of_edges(),))
                 perturbed_edge_travel_times = self.env.get_travel_times_assuming_the_attack(attacker_action)
-                detected = detector_model.forward_single(perturbed_edge_travel_times, False)
+                detected = detector_model.forward_single(perturbed_edge_travel_times, True)
                 detector_penalty = 0
 
                 if detected and attacker_present:
@@ -282,7 +291,7 @@ class Trainer(CustomModule):
                     (self.env.base.number_of_edges(),)))
 
                 truncated = info.get('TimeLimit.truncated', False)
-                attacker_reward = - sum(reward)
+                attacker_reward = sum(reward)
                 detector_reward = - attacker_reward - detector_penalty
 
                 attacker_rewards.append(attacker_reward)
@@ -290,7 +299,7 @@ class Trainer(CustomModule):
 
         return np.mean(attacker_rewards), np.mean(detector_rewards)
 
-    def get_attacker_payoff(self, attacker):  # returns a list of payoffs for the defender
+    def get_attacker_payoff(self, attacker: BaseAttacker):  # returns a list of payoffs for the defender
         payoffs = []
 
         for i, classifier in enumerate(self.defender_strategy_sets):
@@ -299,7 +308,7 @@ class Trainer(CustomModule):
 
         return payoffs
 
-    def get_defender_payoff(self, classifier):  # returns a list of payoffs for the attacker
+    def get_defender_payoff(self, classifier: BaseDetector):  # returns a list of payoffs for the attacker
         payoffs = []
 
         for i, attacker in enumerate(self.attacker_strategy_sets):
@@ -308,12 +317,12 @@ class Trainer(CustomModule):
 
         return payoffs
 
-    def append_attacker_payoffs(self, attacker_payoffs):
+    def append_attacker_payoffs(self, attacker_payoffs: list):
         assert len(self.defender_strategy_sets) == len(attacker_payoffs)
         for i, payoff in enumerate(attacker_payoffs):
             self.payoff_table[i].append(payoff)
 
-    def append_defender_payoffs(self, defender_payoffs):
+    def append_defender_payoffs(self, defender_payoffs: list):
         assert len(self.attacker_strategy_sets) == len(defender_payoffs)
         self.payoff_table.append(defender_payoffs)
 

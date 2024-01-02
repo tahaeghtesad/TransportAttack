@@ -9,7 +9,7 @@ def sigmoid(x, sl=1.0, th=0.0):
     return answer
 
 
-def solve_lp(payoff):
+def solve_lp(payoff: np.ndarray) -> np.ndarray:
     """
     Function for returning mixed strategies of the first step of double oracle iterations.
     :param payoff: Two dimensinal array. Payoff matrix of the players.
