@@ -1,3 +1,4 @@
+import math
 import random
 from typing import Iterable, List, Tuple
 
@@ -89,7 +90,7 @@ class Trip:
             trip.progress = 0
             trip.time_to_next = 0
             trip.edge_time = 0
-            trip.count = max(0, int(trip.demand * (1 - randomize_factor + 2 * randomize_factor * random.random())))
+            trip.count = math.exp(random.gauss(math.log(trip.demand), randomize_factor))
 
     @staticmethod
     def get_trips(srcdest: Iterable[Iterable[str | int]]) -> List['Trip']:
