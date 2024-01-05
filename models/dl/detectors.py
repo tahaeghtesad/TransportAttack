@@ -105,8 +105,11 @@ class DoubleDQNDetector(BaseDetector):
 
         soft_sync(self.target_model, self.model, self.tau)
 
-        return dict(
-            loss=loss.cpu().detach().numpy().item(),
-            r2=r2_score(target_q_values, q_values).cpu().detach().numpy().item(),
-            epsilon=self.epsilon.get_current_epsilon().cpu().detach().numpy().item()
-        )
+        return {
+            'detector/q_loss': loss.cpu().detach().numpy().item(),
+            'detector/r2': r2_score(target_q_values, q_values).cpu().detach().numpy().item(),
+            'detector/epsilon': self.epsilon.get_current_epsilon().cpu().detach().numpy().item(),
+            'detector/max_q': q_values.max().cpu().detach().numpy().item(),
+            'detector/mean_q': q_values.mean().cpu().detach().numpy().item(),
+            'detector/min_q': q_values.min().cpu().detach().numpy().item(),
+        }
