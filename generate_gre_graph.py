@@ -84,7 +84,7 @@ def write_trips(trips, name):
             fd.write(f'{trip[0]},{trip[1]},{trip[2]}\n')
 
 
-def gen(rows, columns, p, q):
+def gen(rows, columns, p, q, trip_density='high'):
     ncomponents = 2
     tries = 0
     while ncomponents != 1:
@@ -92,9 +92,14 @@ def gen(rows, columns, p, q):
         ncomponents = nx.number_strongly_connected_components(graph)
         tries += 1
     name = f'GRE-{rows}x{columns}-{p:.4f}-{q:.4f}-{datetime.now().strftime("%Y%m%d%H%M%S%f")}'
-    nx.write_edgelist(graph, f'TransportationNetworks/Generated/{name}.edgelist')
-    trips = get_trips(graph)
-    write_trips(trips, name)
+    nx.write_edgelist(graph, f'TransportationNetworks/Generated/{name}_{trip_density}.edgelist')
+    if trip_density == 'high':
+        trips = get_trips(graph, trip_size_mean=8)
+    elif trip_density == 'default':
+        trips = get_trips(graph)
+    elif trip_density == 'low':
+        trips = get_trips(graph, trip_size_mean=4)
+    write_trips(trips, f'{name}_{trip_density}')
     nx.draw_kamada_kawai(graph, with_labels=True)
     plt.show()
     print(f'tries: {tries}')
@@ -108,4 +113,6 @@ if __name__ == '__main__':
     rows = 4
     columns = 4
 
-    gen(rows, columns, 0.5051, 0.1111)
+    gen(rows, columns, 0.5051, 0.1111, 'high')
+    gen(rows, columns, 0.5051, 0.1111, 'default')
+    gen(rows, columns, 0.5051, 0.1111, 'low')
