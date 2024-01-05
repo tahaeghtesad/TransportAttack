@@ -201,7 +201,7 @@ class Trainer(CustomModule):
             episode_rewards = []
             detected_at_step = 1000 if attacker_present else -1
 
-            attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else zero_attacker.forward_single(obs, True)[0]
+            attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else zero_attacker.forward_single(obs, True)
 
             while not done and not truncated:
                 step_count += 1
@@ -228,7 +228,7 @@ class Trainer(CustomModule):
                 detector_reward = - sum(reward) - detector_penalty
 
                 episode_rewards.append(detector_reward)
-                next_attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else zero_attacker.forward_single(obs, True)[0]
+                next_attacker_action, next_attacker_normalized_action, next_attacker_allocation, next_attacker_budget = attacker_model.forward_single(obs, True) if attacker_present else zero_attacker.forward_single(obs, True)[0]
                 next_detector_observation = self.env.get_travel_times_assuming_the_attack(next_attacker_action)
 
                 replay_buffer.add(
@@ -240,6 +240,8 @@ class Trainer(CustomModule):
                     truncated
                 )
 
+                writer.add_scalar('env/attacker_budget', next_attacker_budget, global_step)
+
                 attacker_action = next_attacker_action
 
                 if replay_buffer.size() > self.config['rl_config']['batch_size']:
@@ -248,7 +250,7 @@ class Trainer(CustomModule):
                     writer.add_stats(stats, global_step)
 
             writer.add_scalar('env/detected_at_step', detected_at_step, global_step)
-            writer.add_scalar('env/episode_reward', np.sum(episode_rewards), global_step)
+            writer.add_scalar('env/episode_reward', -np.sum(episode_rewards), global_step)
             writer.add_scalar('env/step_count', step_count, global_step)
             writer.add_scalar('env/buffer_size', replay_buffer.size(), global_step)
             pbar.set_description(f'Training Detector | ep: {episode} | Rewards {np.sum(episode_rewards):10.3f} | detected {detected_at_step:10d} |')
