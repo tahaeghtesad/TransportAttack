@@ -24,11 +24,13 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
         self.logger.info(f'Component metrics: {self.metrics}')
 
         self.action_space = [
-            gym.spaces.Box(low=0.0, high=1.0, shape=(len(self.edge_component_mapping[comp]),)) for comp in range(self.n_components)
+            gym.spaces.Box(low=0.0, high=1.0, shape=(len(self.edge_component_mapping[comp]),)) for comp in
+            range(self.n_components)
         ]
 
         self.observation_space = [
-            gym.spaces.Box(low=0.0, high=np.inf, shape=(len(self.edge_component_mapping[comp]), 5)) for comp in range(self.n_components)
+            gym.spaces.Box(low=0.0, high=np.inf, shape=(len(self.edge_component_mapping[comp]), 5)) for comp in
+            range(self.n_components)
         ]  # Observation: dict(feature_vector, allocation)
 
         vehicles_in_components = [[0, 0] for _ in range(self.n_components)]
@@ -97,17 +99,22 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
                     self.base,
                     trip.next_node,
                     trip.destination,
-                    weight=lambda u, v, _: np.maximum(0, self.get_travel_time(u, v, on_edge[(u, v)]) + perturbed[(u, v)])
+                    weight=lambda u, v, d: self.get_travel_time(u, v, d, on_edge[(u, v)]) + perturbed[(u, v)]
                 )
-                path_weights = [self.get_travel_time(path[i], path[i+1], on_edge[(path[i], path[i+1])]) for i in range(len(path) - 1)]
+                path_weights = [
+                    self.get_travel_time(path[i], path[i + 1], self.base.get_edge_data(path[i], path[i + 1]),
+                                         on_edge[(path[i], path[i + 1])]) for i in range(len(path) - 1)]
                 original_path = nx.shortest_path(
                     self.base,
                     trip.next_node,
                     trip.destination,
-                    weight=lambda u, v, _: np.maximum(0,
-                                                      self.get_travel_time(u, v, on_edge[(u, v)]))
+                    weight=lambda u, v, d: self.get_travel_time(u, v, d, on_edge[(u, v)])
                 )
-                original_path_weights = [self.get_travel_time(original_path[i], original_path[i + 1], on_edge[(original_path[i], original_path[i + 1])]) for i in range(len(original_path) - 1)]
+                original_path_weights = [self.get_travel_time(original_path[i], original_path[i + 1],
+                                                              self.base.get_edge_data(original_path[i],
+                                                                                      original_path[i + 1]),
+                                                              on_edge[(original_path[i], original_path[i + 1])]) for i
+                                         in range(len(original_path) - 1)]
 
                 trip_time_diff = sum(path_weights) - sum(original_path_weights)
                 assert trip_time_diff >= 0, f'{original_action}'
@@ -116,16 +123,17 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
                 trip.prev_node = trip.next_node
                 trip.next_node = path[1]
                 trip.time_to_next = round(self.get_travel_time(trip.prev_node, trip.next_node,
-                                                         on_edge[(trip.prev_node, trip.next_node)]))
+                                                               self.base.get_edge_data(trip.prev_node, trip.next_node),
+                                                               on_edge[(trip.prev_node, trip.next_node)]))
                 trip.edge_time = trip.time_to_next
 
-                self.logger.log(1, f'Step {self.time_step}.'
-                                   f' Trip {trip.number}({trip.start},{trip.destination}) arrived at node {trip.prev_node}.'
-                                   f' Going toward {trip.next_node}.'
-                                   f' Original path: {original_path}|{original_path_weights}.'
-                                   f' Perturbed path: {path}|{path_weights}.'
-                                   f' Will arrive there in {trip.time_to_next} steps.'
-                                   f' Calculated Time to next is {self.get_travel_time(trip.prev_node, trip.next_node, on_edge[(trip.prev_node, trip.next_node)] + perturbed[(trip.prev_node, trip.next_node)])}.')
+                # self.logger.log(1, f'Step {self.time_step}.'
+                #                    f' Trip {trip.number}({trip.start},{trip.destination}) arrived at node {trip.prev_node}.'
+                #                    f' Going toward {trip.next_node}.'
+                #                    f' Original path: {original_path}|{original_path_weights}.'
+                #                    f' Perturbed path: {path}|{path_weights}.'
+                #                    f' Will arrive there in {trip.time_to_next} steps.'
+                #                    f' Calculated Time to next is {self.get_travel_time(trip.prev_node, trip.next_node, on_edge[(trip.prev_node, trip.next_node)] + perturbed[(trip.prev_node, trip.next_node)])}.')
 
             # if vehicle on the edge, let it progress
             if not trip.time_to_next == 0:
@@ -145,7 +153,8 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
 
         info = dict(
             original_reward=self.get_reward(),
-            perturbed_edge_travel_times=[round(self.get_travel_time(u, v, on_edge[(u, v)]) + perturbed[(u, v)]) for u, v in self.base.edges]
+            perturbed_edge_travel_times=[round(self.get_travel_time(u, v, self.base.get_edge_data(u, v), on_edge[(u, v)]) + perturbed[(u, v)]) for u, v
+                                         in self.base.edges]
         )
 
         vehicles_in_component = np.zeros(self.n_components)
@@ -262,7 +271,8 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
         for i, e in enumerate(self.base.edges):
             perturbed[e] = action[i]
 
-        return np.array([round(self.get_travel_time(u, v, on_edge[(u, v)]) + perturbed[(u, v)]) for u, v in self.base.edges])
+        return np.array(
+            [round(self.get_travel_time(u, v, self.base.get_edge_data(u, v), on_edge[(u, v)]) + perturbed[(u, v)]) for u, v in self.base.edges])
 
     def show_base_graph(self, title=None):
         pos = nx.spectral_layout(self.base)
@@ -275,8 +285,12 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
         fig.set_figwidth(25)
         ax.margins(0.0)
         plt.axis("off")
-        node_colors = [DynamicMultiAgentTransportationNetworkEnvironment.get_color_by_component(self.base.nodes[n]['component']) for n in self.base.nodes]
-        edge_colors = [DynamicMultiAgentTransportationNetworkEnvironment.get_color_by_component(self.base.edges[n]['component']) for n in self.base.edges]
+        node_colors = [
+            DynamicMultiAgentTransportationNetworkEnvironment.get_color_by_component(self.base.nodes[n]['component'])
+            for n in self.base.nodes]
+        edge_colors = [
+            DynamicMultiAgentTransportationNetworkEnvironment.get_color_by_component(self.base.edges[n]['component'])
+            for n in self.base.edges]
 
         nx.draw(self.base, pos=pos, ax=ax, node_color=node_colors, edge_color=edge_colors, with_labels=True)
         plt.show()

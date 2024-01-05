@@ -137,13 +137,16 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
 
         return on_vertex
 
-    def get_travel_time(self, i: int, j: int, on_edge: int) -> int:
-        capacity = self.base[i][j]['capacity']
-        free_flow_time = self.base[i][j]['free_flow_time']
-        b = self.base[i][j]['b']
-        power = self.base[i][j]['power']
+    # def get_travel_time(self, i: int, j: int, on_edge: int) -> int:
+    #     capacity = self.base[i][j]['capacity']
+    #     free_flow_time = self.base[i][j]['free_flow_time']
+    #     b = self.base[i][j]['b']
+    #     power = self.base[i][j]['power']
+    #
+    #     return free_flow_time * (1.0 + b * (on_edge * self.config['congestion'] / capacity) ** power)
 
-        return free_flow_time * (1.0 + b * (on_edge * self.config['congestion'] / capacity) ** power)
+    def get_travel_time(self, i: int, j: int, d: dict, on_edge: int) -> float:
+        return d['free_flow_time'] * (1.0 + d['b'] * (on_edge * self.config['congestion'] / d['capacity']) ** d['power'])
 
     # Vector of size (E, 5) where E is the number of edges.
     # Each row is a vector of size 5:
@@ -164,19 +167,19 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
             if t.time_to_next == 0 and t.next_node != t.destination:
                 path = nx.shortest_path(
                     self.base, t.next_node, t.destination,
-                    weight=lambda u, v, d: self.get_travel_time(u, v, on_edge[(u, v)]))
+                    weight=lambda u, v, d: self.get_travel_time(u, v, d, on_edge[(u, v)]))
                 for i in range(len(path) - 1):
                     feature_vector[edges[(path[i], path[i + 1])]][0] += t.count  # feature 0
                 feature_vector[edges[(path[0], path[1])]][2] += t.count  # feature 2
             if t.time_to_next != 0:
                 path = nx.shortest_path(
                     self.base, t.next_node, t.destination,
-                    weight=lambda u, v, d: self.get_travel_time(u, v, on_edge[(u, v)]))
+                    weight=lambda u, v, d: self.get_travel_time(u, v, d, on_edge[(u, v)]))
                 for i in range(len(path) - 1):
                     feature_vector[edges[(path[i], path[i + 1])]][4] += t.count  # feature 4
                 if t.prev_node is not None:
                     edge = (t.prev_node, t.next_node)
-                    feature_vector[edges[edge]][3] += (t.time_to_next / self.get_travel_time(*edge, on_edge[edge])) * t.count  # feature 3
+                    feature_vector[edges[edge]][3] += (t.time_to_next / self.get_travel_time(*edge, self.base.get_edge_data(*edge), on_edge[edge])) * t.count  # feature 3
 
         for i, e in enumerate(self.base.edges):
             feature_vector[i][1] = on_edge[e]  # feature 1
