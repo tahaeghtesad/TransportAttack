@@ -315,7 +315,6 @@ class DDPGAllocator(AllocatorInterface):
             'allocator/q_min': q_values.min().detach().cpu().item(),
             'allocator/q_max': q_values.max().detach().cpu().item(),
             'allocator/q_mean': q_values.mean().detach().cpu().item(),
-            'allocator/rewards': rewards.max().detach().cpu().item(),
             'allocator/a_val': -actor_loss.detach().cpu().item(),
             'allocator/r2': max(r2_score(target_q_values, q_values).detach().cpu().item(), -1),
             'allocator/noise': self.noise.get_current_noise().detach().cpu().item(),
@@ -529,7 +528,7 @@ class NoBudgetDeterministicActor(CustomModule):
         logits = self.model(
             self.state_extractor(aggregated_state)
         )
-        return torch.nn.functional.normalize(logits, dim=1, p=1)
+        return logits
 
     def extra_repr(self) -> str:
         return f'n_components={self.n_components}, n_features={self.n_features}'
