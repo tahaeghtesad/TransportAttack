@@ -536,7 +536,7 @@ class NoBudgetDeterministicActor(CustomModule):
 
 
 class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
-    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, target_allocation_noise_scale, actor_update_steps, noise: DecayingNoiseInterface, epsilon: EpsilonInterface):
+    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, target_allocation_noise_scale, actor_update_steps, epsilon_budget, noise: DecayingNoiseInterface, epsilon: EpsilonInterface):
         super().__init__(name='TD3NoBudgetAllocator')
 
         self.edge_component_mapping = edge_component_mapping
@@ -550,6 +550,7 @@ class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
         self.epsilon = epsilon
         self.target_allocation_noise_scale = target_allocation_noise_scale
         self.actor_update_steps = actor_update_steps
+        self.epsilon_budget = epsilon_budget
         self.training_step = 0
 
         self.actor = NoBudgetDeterministicActor(self.n_components, self.n_features, self.actor_lr)
@@ -572,8 +573,8 @@ class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
 
         if not deterministic:
             if self.epsilon():
-                action = torch.nn.functional.normalize(torch.rand(action.shape), dim=1, p=1)
-            action = torch.nn.functional.normalize(torch.maximum(self.noise.forward(action.shape) + action, torch.tensor(0, device=self.device)), dim=1, p=1)
+                action = torch.rand(action.shape) * self.epsilon_budget
+            action = torch.maximum(self.noise.forward(action.shape) + action, torch.tensor(0, device=self.device))
 
         return action
 
