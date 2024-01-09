@@ -50,7 +50,7 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
 
         if config['network']['method'] == 'edge_list':
             self.base_trips = Trip.using_csv_file(f'{base_path}/TransportationNetworks/Generated/{config["network"]["file"]}.trips')
-        elif self.config['trips']['type'] == 'trips_file':
+        elif self.config['network']['method'] == 'network_file':
             city = self.config['network']['city']
             self.base_trips = Trip.trips_using_od_file(f'{base_path}/TransportationNetworks/{city}/{city}_trips.tntp')
         elif self.config['trips']['type'] == 'trips_file_demand':

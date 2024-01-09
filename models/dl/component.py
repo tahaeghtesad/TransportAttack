@@ -309,7 +309,6 @@ class DDPGComponent(ComponentInterface):
 
         return dict(
             a_val=-component_actor_loss.cpu().data.numpy().item(),
-            noise=self.noise.get_current_noise().cpu().data.numpy().item()
         )
 
     def __update_multi_agent(self, states, actions, budgets, allocations, next_states, next_budgets, next_allocations, rewards, dones):
@@ -320,7 +319,6 @@ class DDPGComponent(ComponentInterface):
             q_min=np.zeros(self.n_components),
             q_mean=np.zeros(self.n_components),
             a_val=np.zeros(self.n_components),
-            noise=np.zeros(self.n_components),
         )
 
         for c in range(self.n_components):
@@ -359,6 +357,9 @@ class DDPGComponent(ComponentInterface):
         for k, v in stats.items():
             for c in range(self.n_components):
                 returnable_stats[f'component/{k}/{c}'] = v[c]
+
+        returnable_stats['noise'] = self.noise.get_current_noise().cpu().data.numpy().item()
+
         return returnable_stats | {
             'component/noise': self.noise.get_current_noise(),
         }

@@ -38,6 +38,16 @@ class ExperienceReplay:
     def reset(self):
         pass
 
+    def clear(self):
+        self.states.clear()
+        self.allocations.clear()
+        self.budgets.clear()
+        self.actions.clear()
+        self.rewards.clear()
+        self.next_states.clear()
+        self.dones.clear()
+        self.truncateds.clear()
+
     def get_experiences(self):
             indices = random.choices(range(self.size()), k=self.batch_size)
 
@@ -170,6 +180,14 @@ class BasicExperienceReplay:
 
     def reset(self):
         pass
+
+    def clear(self):
+        self.states.clear()
+        self.actions.clear()
+        self.rewards.clear()
+        self.next_states.clear()
+        self.dones.clear()
+        self.truncateds.clear()
 
     def get_experiences(self) -> tuple[list, list, list, list, list, list]:
             indices = random.choices(range(self.size()), k=self.batch_size)

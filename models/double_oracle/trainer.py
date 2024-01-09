@@ -114,7 +114,7 @@ class Trainer(CustomModule):
             step_count = 0
             detector = self.defender_strategy_sets[
                 np.random.choice(len(self.defender_strategy_sets), p=probabilities)]
-            detected_at_step = 1000
+            detected_at_step = self.env.config['horizon']
 
             while not done and not truncated:
                 step_count += 1
@@ -131,7 +131,6 @@ class Trainer(CustomModule):
                     replay_buffer.add(obs, allocation, budget, action, value, obs, True, False)
                     episode_reward.append(cumulative_reward)
                     step_count += steps
-                    global_step += steps
                     writer.add_scalar('env/detected_value', np.sum(value), global_step)
                     done = True
                 else:
@@ -150,16 +149,21 @@ class Trainer(CustomModule):
                     stats = attacker_model.update(observations, allocations, budgets, actions, rewards, next_observations, dones, truncateds)
                     writer.add_stats(stats, global_step)
 
+                if global_step % self.config['attacker_config']['iterate_interval'] == 0:
+                    attacker_model.iterate()
+                    replay_buffer.clear()
+
                 writer.add_scalar('env/attacker_budget', budget, global_step)
 
             pbar.set_description(
-                f'Training Attacker |'
+                f'Training {"Component" if attacker_model.training_iteration % 2 == 0 else "Allocator"} |'
                 f' ep: {episode} |'
                 f' Episode Reward {np.sum(np.array(episode_reward)):10.3f} |'
                 f' Detected {detected_at_step:10d} |'
             )
 
             writer.add_scalar(f'env/episode_reward', np.sum(episode_reward), global_step)
+            writer.add_scalar(f'env/total_travel_time', np.sum(episode_reward), global_step)
             writer.add_scalar(f'env/step_count', step_count, global_step)
             writer.add_scalar(f'env/detected_at_step', detected_at_step, global_step)
 
@@ -199,9 +203,10 @@ class Trainer(CustomModule):
             obs = self.env.reset()
             step_count = 0
             episode_rewards = []
-            detected_at_step = 1000 if attacker_present else -1
+            total_travel_time = []
+            detected_at_step = self.env.config['horizon'] if attacker_present else -1
 
-            attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else zero_attacker.forward_single(obs, True)
+            attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else zero_attacker.forward_single(obs, True)[0]
 
             while not done and not truncated:
                 step_count += 1
@@ -225,10 +230,13 @@ class Trainer(CustomModule):
                 )
 
                 truncated = info.get('TimeLimit.truncated', False)
-                detector_reward = - sum(reward) - detector_penalty
+                travel_time = sum(reward)
+                detector_reward = - travel_time - detector_penalty
 
                 episode_rewards.append(detector_reward)
-                next_attacker_action, next_attacker_normalized_action, next_attacker_allocation, next_attacker_budget = attacker_model.forward_single(obs, True) if attacker_present else zero_attacker.forward_single(obs, True)[0]
+                total_travel_time.append(travel_time)
+
+                next_attacker_action, next_attacker_normalized_action, next_attacker_allocation, next_attacker_budget = attacker_model.forward_single(obs, True) if attacker_present else zero_attacker.forward_single(obs, True)
                 next_detector_observation = self.env.get_travel_times_assuming_the_attack(next_attacker_action)
 
                 replay_buffer.add(
@@ -250,7 +258,8 @@ class Trainer(CustomModule):
                     writer.add_stats(stats, global_step)
 
             writer.add_scalar('env/detected_at_step', detected_at_step, global_step)
-            writer.add_scalar('env/episode_reward', -np.sum(episode_rewards), global_step)
+            writer.add_scalar('env/total_travel_time', np.sum(total_travel_time), global_step)
+            writer.add_scalar('env/episode_reward', np.sum(episode_rewards), global_step)
             writer.add_scalar('env/step_count', step_count, global_step)
             writer.add_scalar('env/buffer_size', replay_buffer.size(), global_step)
             pbar.set_description(f'Training Detector | ep: {episode} | Rewards {np.sum(episode_rewards):10.3f} | detected {detected_at_step:10d} |')
@@ -327,6 +336,7 @@ class Trainer(CustomModule):
         return payoffs
 
     def store_payoff_table(self):
+        os.makedirs(f'logs/{self.config["run_id"]}', exist_ok=True)
         np.savetxt(f'logs/{self.config["run_id"]}/payoff_table.csv', np.array(self.payoff_table), delimiter=',')
 
     def append_attacker_payoffs(self, attacker_payoffs: list):
