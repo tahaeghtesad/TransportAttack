@@ -21,7 +21,7 @@ class LevelTrainingScheduler(CustomModule):
     def step(self):
         self.global_step += 1
 
-        if self.global_step >= self.steps == 0:
+        if self.global_step >= self.steps:
             self.iteration += 1
             self.global_step = 0
             return True
