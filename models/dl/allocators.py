@@ -1,8 +1,7 @@
 import numpy as np
 import torch
 
-from models import AllocatorInterface, DecayingNoiseInterface, CustomModule, EpsilonInterface, \
-    NoBudgetAllocatorInterface
+from models import AllocatorInterface, DecayingNoiseInterface, CustomModule, NoBudgetAllocatorInterface
 from util.torch.math import r2_score, explained_variance
 from util.torch.misc import hard_sync, soft_sync
 from util.torch.rl import GeneralizedAdvantageEstimation
@@ -249,7 +248,7 @@ class DSPGAllocator(AllocatorInterface):
 
 
 class DDPGAllocator(AllocatorInterface):
-    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise: DecayingNoiseInterface, epsilon: EpsilonInterface):
+    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise: DecayingNoiseInterface):
         super().__init__(name='DDPGBudgetAllocator')
         self.edge_component_mapping = edge_component_mapping
         self.n_components = len(edge_component_mapping)
@@ -264,7 +263,6 @@ class DDPGAllocator(AllocatorInterface):
         self.target_actor = DeterministicActor(self.n_components, n_features, actor_lr)
 
         self.noise = noise
-        self.epsilon = epsilon
 
         self.tau = tau
         self.gamma = gamma
@@ -276,8 +274,6 @@ class DDPGAllocator(AllocatorInterface):
         with torch.no_grad():
             actions = self.actor.forward(aggregated_states, budgets)
         if not deterministic:
-            if self.epsilon():
-                actions = torch.nn.functional.normalize(torch.rand(actions.shape), dim=1, p=1)
             actions = torch.nn.functional.normalize(torch.maximum(self.noise.forward(actions.shape) + actions, torch.tensor(0, device=self.device)), dim=1, p=1)
         return actions
 
@@ -318,7 +314,6 @@ class DDPGAllocator(AllocatorInterface):
             'allocator/a_val': -actor_loss.detach().cpu().item(),
             'allocator/r2': max(r2_score(target_q_values, q_values).detach().cpu().item(), -1),
             'allocator/noise': self.noise.get_current_noise().detach().cpu().item(),
-            'allocator/epsilon': self.epsilon.get_current_epsilon().detach().cpu().item(),
         }
 
 
@@ -535,7 +530,7 @@ class NoBudgetDeterministicActor(CustomModule):
 
 
 class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
-    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, target_allocation_noise_scale, actor_update_steps, epsilon_budget, noise: DecayingNoiseInterface, epsilon: EpsilonInterface):
+    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, target_allocation_noise_scale, actor_update_steps, noise: DecayingNoiseInterface):
         super().__init__(name='TD3NoBudgetAllocator')
 
         self.edge_component_mapping = edge_component_mapping
@@ -546,10 +541,8 @@ class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
         self.tau = tau
         self.gamma = gamma
         self.noise = noise
-        self.epsilon = epsilon
         self.target_allocation_noise_scale = target_allocation_noise_scale
         self.actor_update_steps = actor_update_steps
-        self.epsilon_budget = epsilon_budget
         self.training_step = 0
 
         self.actor = NoBudgetDeterministicActor(self.n_components, self.n_features, self.actor_lr)
@@ -571,8 +564,6 @@ class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
             action = self.actor.forward(aggregated_state)
 
         if not deterministic:
-            if self.epsilon():
-                action = torch.rand(action.shape) * self.epsilon_budget
             action = torch.maximum(self.noise.forward(action.shape) + action, torch.tensor(0, device=self.device))
 
         return action
@@ -615,7 +606,6 @@ class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
             'allocator/rewards': rewards.max().detach().cpu().item(),
             'allocator/r2': max(r2_score(target_q_values, q_values).detach().cpu().item(), -1),
             'allocator/noise': self.noise.get_current_noise().detach().cpu().item(),
-            'allocator/epsilon': self.epsilon.get_current_epsilon().detach().cpu().item(),
         }
 
         # Update actor

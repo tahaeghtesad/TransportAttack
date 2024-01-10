@@ -6,6 +6,7 @@ import torch.nn
 from models import AttackerInterface, BudgetingInterface, AllocatorInterface, ComponentInterface, \
     NoBudgetAllocatorInterface
 from models.heuristics.budgeting import FixedBudgeting
+from util.scheduler import LevelTrainingScheduler
 
 
 class BaseAttacker(AttackerInterface, ABC):
@@ -58,16 +59,6 @@ class BaseAttacker(AttackerInterface, ABC):
         return constructed_actions
 
 
-class IterativeAttacker(BaseAttacker, ABC):
-
-    def __init__(self, name, edge_component_mapping) -> None:
-        super().__init__(name, edge_component_mapping)
-        self.training_iteration = 0
-
-    def iterate(self):
-        self.training_iteration += 1
-
-
 class FixedBudgetNetworkedWideGreedy(BaseAttacker):
 
     def __init__(self, edge_component_mapping, budget, budget_noise) -> None:
@@ -87,12 +78,13 @@ class FixedBudgetNetworkedWideGreedy(BaseAttacker):
         return dict()
 
 
-class Attacker(IterativeAttacker):
+class Attacker(BaseAttacker):
     def __init__(
             self, name, edge_component_mapping,
             budgeting: BudgetingInterface,
             allocator: AllocatorInterface,
             component: ComponentInterface,
+            iterative_scheduler: LevelTrainingScheduler,
     ):
         super().__init__(name=name, edge_component_mapping=edge_component_mapping)
 
@@ -100,11 +92,13 @@ class Attacker(IterativeAttacker):
         self.budgeting = budgeting
         self.component = component
 
+        self.iterative_scheduler = iterative_scheduler
+
     def forward(self, observation, deterministic):
         aggregated = self._aggregate_state(observation)
-        budgets = self.budgeting.forward(aggregated, deterministic=deterministic if self.training_iteration % 3 == 2 else True)
-        allocations = self.allocator.forward(aggregated, budgets, deterministic=deterministic if self.training_iteration % 3 == 1 else True)
-        actions = self.component.forward(observation, budgets, allocations, deterministic=deterministic if self.training_iteration % 3 == 0 else True)
+        budgets = self.budgeting.forward(aggregated, deterministic=False if self.iterative_scheduler.should_train('budgeting') else True)
+        allocations = self.allocator.forward(aggregated, budgets, deterministic=False if self.iterative_scheduler.should_train('allocator') else True)
+        actions = self.component.forward(observation, budgets, allocations, deterministic=False if self.iterative_scheduler.should_train('component') else True)
         constructed_action = self._construct_action(actions, allocations, budgets)
         return constructed_action, actions, allocations, budgets
 
@@ -117,7 +111,7 @@ class Attacker(IterativeAttacker):
 
         stats = dict()
 
-        if self.training_iteration % 3 == 0:
+        if self.iterative_scheduler.should_train('component'):
             stats |= self.component.update(
                 states=observation,
                 actions=actions,
@@ -131,7 +125,7 @@ class Attacker(IterativeAttacker):
                 truncateds=truncateds
             )
 
-        if self.training_iteration % 3 == 1:
+        if self.iterative_scheduler.should_train('allocator'):
             stats |= self.allocator.update(
                 aggregated_states=next_aggregated,
                 allocations=allocations,
@@ -143,7 +137,7 @@ class Attacker(IterativeAttacker):
                 truncateds=truncateds,
             )
 
-        if self.training_iteration % 3 == 2:
+        if self.iterative_scheduler.should_train('budgeting'):
             stats |= self.budgeting.update(
                 aggregated_state=next_aggregated,
                 budget=next_budgets,
@@ -156,36 +150,39 @@ class Attacker(IterativeAttacker):
         return stats
 
 
-class NoBudgetAttacker(IterativeAttacker):
+class NoBudgetAttacker(BaseAttacker):
     def __init__(
             self, name, edge_component_mapping,
             allocator: NoBudgetAllocatorInterface,
             component: ComponentInterface,
+            iterative_scheduler: LevelTrainingScheduler,
     ):
         super().__init__(name=name, edge_component_mapping=edge_component_mapping)
 
         self.allocator = allocator
         self.component = component
 
+        self.iterative_scheduler = iterative_scheduler
+
     def forward(self, observation, deterministic):
         aggregated = self._aggregate_state(observation)
-        allocations = self.allocator.forward(aggregated, deterministic=deterministic if self.training_iteration % 2 == 1 else True)
+        allocations = self.allocator.forward(aggregated, deterministic=False if self.iterative_scheduler.should_train('allocator') else True)
         budgets = torch.sum(allocations, dim=1, keepdim=True)
         normalized_allocations = torch.nn.functional.normalize(allocations, dim=1, p=1)
-        actions = self.component.forward(observation, budgets, normalized_allocations, deterministic=deterministic if self.training_iteration % 2 == 0 else True)
+        actions = self.component.forward(observation, budgets, normalized_allocations, deterministic=False if self.iterative_scheduler.should_train('component') else True)
         constructed_action = self._construct_action(actions, allocations, budgets)
         return constructed_action, actions, allocations, budgets
 
     def _update(self, observation, allocations, budgets, actions, rewards, next_observations, dones, truncateds):
         with torch.no_grad():
             next_aggregated = self._aggregate_state(next_observations)
-            next_allocations_times_budget = self.allocator.forward(next_aggregated, deterministic=True)  # TODO is this True?
+            next_allocations_times_budget = self.allocator.forward(next_aggregated, deterministic=True)
             next_allocations = torch.nn.functional.normalize(next_allocations_times_budget, dim=1, p=1)
             next_budgets = torch.sum(next_allocations_times_budget, dim=1, keepdim=True)
 
         stats = dict()
 
-        if self.training_iteration % 2 == 0:
+        if self.iterative_scheduler.should_train('component'):
             stats |= self.component.update(
                 states=observation,
                 actions=actions,
@@ -199,7 +196,7 @@ class NoBudgetAttacker(IterativeAttacker):
                 truncateds=truncateds
             )
 
-        if self.training_iteration % 2 == 1:
+        if self.iterative_scheduler.should_train('allocator'):
             stats |= self.allocator.update(
                 aggregated_states=next_aggregated,
                 allocations=allocations * budgets,

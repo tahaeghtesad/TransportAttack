@@ -17,6 +17,7 @@ from models.rl_attackers import NoBudgetAttacker, BaseAttacker
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
 from util.math import solve_lp
 from util.rl.experience_replay import ExperienceReplay, BasicExperienceReplay
+from util.scheduler import LevelTrainingScheduler
 from util.torch.writer import TBStatWriter
 
 
@@ -71,17 +72,11 @@ class Trainer(CustomModule):
                 self.config['attacker_config']['high_level']['gamma'],
                 self.config['attacker_config']['high_level']['target_allocation_noise_scale'],
                 self.config['attacker_config']['high_level']['actor_update_steps'],
-                self.config['attacker_config']['high_level']['epsilon_budget'],
                 noise=OUActionNoise(
                     0,
                     self.config['attacker_config']['high_level']['noise']['scale'],
                     self.config['attacker_config']['high_level']['noise']['target'],
                     self.config['attacker_config']['high_level']['noise']['decay']
-                ),
-                epsilon=DecayEpsilon(
-                    self.config['attacker_config']['high_level']['epsilon']['start'],
-                    self.config['attacker_config']['high_level']['epsilon']['end'],
-                    self.config['attacker_config']['high_level']['epsilon']['decay']
                 ),
             ),
             component=TD3Component(
@@ -99,7 +94,8 @@ class Trainer(CustomModule):
                 ),
                 self.config['attacker_config']['low_level']['target_allocation_noise_scale'],
                 self.config['attacker_config']['low_level']['actor_update_steps'],
-            )
+            ),
+            iterative_scheduler=LevelTrainingScheduler(['component', 'allocator'], self.config['attacker_config']['iterate_interval'])
         )
         replay_buffer = ExperienceReplay(self.config['rl_config']['buffer_size'],
                                          self.config['rl_config']['batch_size'])
@@ -149,14 +145,13 @@ class Trainer(CustomModule):
                     stats = attacker_model.update(observations, allocations, budgets, actions, rewards, next_observations, dones, truncateds)
                     writer.add_stats(stats, global_step)
 
-                if global_step % self.config['attacker_config']['iterate_interval'] == 0:
-                    attacker_model.iterate()
+                if attacker_model.iterative_scheduler.step():
                     replay_buffer.clear()
 
                 writer.add_scalar('env/attacker_budget', budget, global_step)
 
             pbar.set_description(
-                f'Training {"Component" if attacker_model.training_iteration % 2 == 0 else "Allocator"} |'
+                f'Training {attacker_model.iterative_scheduler.get_current_level()} |'
                 f' ep: {episode} |'
                 f' Episode Reward {np.sum(np.array(episode_reward)):10.3f} |'
                 f' Detected {detected_at_step:10d} |'

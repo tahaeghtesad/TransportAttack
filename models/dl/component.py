@@ -358,8 +358,6 @@ class DDPGComponent(ComponentInterface):
             for c in range(self.n_components):
                 returnable_stats[f'component/{k}/{c}'] = v[c]
 
-        returnable_stats['noise'] = self.noise.get_current_noise().cpu().data.numpy().item()
-
         return returnable_stats | {
             'component/noise': self.noise.get_current_noise(),
         }

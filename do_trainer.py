@@ -4,7 +4,6 @@ import numpy as np
 import torch
 
 from models.double_oracle.trainer import Trainer
-from models.heuristics.detectors import ZeroDetector
 from models.rl_attackers import FixedBudgetNetworkedWideGreedy
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
 
@@ -19,7 +18,7 @@ if __name__ == '__main__':
             # file='GRE-4x4-0.5051-0.1111-20240105112519374509_low',
             randomize_factor=0.5,
         ),
-        horizon=100,
+        horizon=50,
         render_mode=None,
         congestion=True,
         # rewarding_rule='normalized',
@@ -36,46 +35,35 @@ if __name__ == '__main__':
             gamma=0.95,
             buffer_size=100_000,
             batch_size=64,
-            epochs=2048,
+            epochs=3072,
         ),
         attacker_config=dict(
             iterate_interval=5_000,
             high_level=dict(
-                critic_lr=1e-3,
-                actor_lr=1e-4,
+                critic_lr=1e-4,
+                actor_lr=1e-5,
                 tau=0.001,
                 gamma=0.99,
                 target_allocation_noise_scale=0.001,
                 actor_update_steps=3,
-                epsilon_budget=30,
                 noise=dict(
                     scale=0.5,
                     target=0.001,
                     decay=10_000
                 ),
-                epsilon=dict(
-                    start=1.0,
-                    end=0.05,
-                    decay=5_000
-                )
             ),
             low_level=dict(
-                critic_lr=1e-2,
-                actor_lr=5e-4,
+                critic_lr=1e-4,
+                actor_lr=5e-5,
                 tau=0.001,
                 gamma=0.9,
-                target_allocation_noise_scale=0.001,
+                target_allocation_noise_scale=0.0001,
                 actor_update_steps=2,
                 noise=dict(
                     scale=0.5,
-                    target=0.001,
+                    target=0.000,
                     decay=10_000
                 ),
-                epsilon=dict(
-                    start=1.0,
-                    end=0.05,
-                    decay=5_000
-                )
             )
         ),
         detector_config=dict(
