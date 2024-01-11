@@ -55,19 +55,17 @@ class QCritic(CustomModule):
 
         self.state_extractor = torch.nn.Sequential(
             torch.nn.Flatten(),
-            torch.nn.Linear(self.n_components * self.n_features, 128),
-            # torch.nn.LayerNorm([64]),
+            torch.nn.Linear(self.n_components * self.n_features + 1, 256),
             torch.nn.ReLU(),
         )
 
         self.action_extractor = torch.nn.Sequential(
-            torch.nn.Linear(self.n_components, 128),
-            # torch.nn.LayerNorm([64]),
+            torch.nn.Linear(self.n_components, 256),
             torch.nn.ReLU(),
         )
 
         self.model = torch.nn.Sequential(
-            torch.nn.Linear(128 + 128 + 1, 128),
+            torch.nn.Linear(256 + 256, 512),
             torch.nn.ReLU(),
             torch.nn.Linear(128, 1),
         )
@@ -78,9 +76,13 @@ class QCritic(CustomModule):
 
         return self.model(
             torch.cat((
-                self.state_extractor(aggregated_state),
+                self.state_extractor(
+                    torch.cat((
+                        aggregated_state,
+                        budget
+                    ), dim=1)
+                ),
                 self.action_extractor(allocation),
-                budget
             ), dim=1)
         )
 

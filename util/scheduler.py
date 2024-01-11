@@ -19,6 +19,11 @@ class LevelTrainingScheduler(CustomModule):
         return self.names[self.iteration % self.counts]
 
     def step(self):
+        """
+            This function steps the scheduler.
+        :return: True if the iteration is finished
+        """
+
         self.global_step += 1
 
         if self.global_step >= self.steps:

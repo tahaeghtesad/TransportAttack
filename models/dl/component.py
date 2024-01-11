@@ -82,8 +82,8 @@ class DeterministicActor(CustomModule):
             torch.nn.ReLU(),
             torch.nn.Linear(512, n_edges),
             # torch.nn.Softmax(dim=1),
-            # torch.nn.ReLU()
-            torch.nn.Sigmoid()
+            torch.nn.ReLU()
+            # torch.nn.Sigmoid()
         )
 
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
