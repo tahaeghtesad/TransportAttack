@@ -7,19 +7,14 @@ import torch
 from tqdm import tqdm
 
 from models import CustomModule
-from models.attack_heuristics import Zero
-from models.dl.allocators import TD3Allocator
-from models.dl.budgeting import TD3Budgeting
-from models.dl.component import TD3Component
-from models.dl.detectors import DoubleDQNDetector, BaseDetector
-from models.dl.epsilon import DecayEpsilon
-from models.dl.noise import OUActionNoise
-from models.heuristics.allocators import ProportionalAllocator
-from models.rl_attackers import BaseAttacker, Attacker
+from models.agents.heuristics.attackers.attackers import Zero
+from models.agents.rl_agents.attackers.mixed_td3_attacker import MixedTD3Attacker
+from models.agents.rl_agents.attackers.rl_attackers import BaseAttacker
+from models.agents.rl_agents.defenders.detectors.detectors import BaseDetector, DoubleDQNDetector
+from models.exploration.epsilon import DecayEpsilon
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
 from util.math import solve_lp
 from util.rl.experience_replay import ExperienceReplay, BasicExperienceReplay
-from util.scheduler import LevelTrainingScheduler
 from util.torch.writer import TBStatWriter
 
 
@@ -37,7 +32,7 @@ class Trainer(CustomModule):
         self.payoff_table = []
 
     def __get_state_values_assuming_no_action(self, done):
-        gamma = self.config['rl_config']['gamma']
+        gamma = self.config['attacker_config']['gamma']
 
         truncated = False
         immediate_rewards = []
@@ -64,147 +59,98 @@ class Trainer(CustomModule):
         index = len(self.attacker_strategy_sets)
 
         writer = TBStatWriter(f'logs/{self.config["run_id"]}/attacker_{index}/')
-        component = TD3Component(
-                self.env.edge_component_mapping,
-                5,
-                self.config['attacker_config']['low_level']['critic_lr'],
-                self.config['attacker_config']['low_level']['actor_lr'],
-                self.config['attacker_config']['low_level']['tau'],
-                self.config['attacker_config']['low_level']['gamma'],
-                self.config['attacker_config']['low_level']['target_allocation_noise_scale'],
-                self.config['attacker_config']['low_level']['actor_update_steps'],
-                OUActionNoise(
-                    0,
-                    self.config['attacker_config']['low_level']['noise']['scale'],
-                    self.config['attacker_config']['low_level']['noise']['target'],
-                    self.config['attacker_config']['low_level']['noise']['decay']
-                ),
-            )
 
-        allocator = TD3Allocator(
-            self.env.edge_component_mapping,
-            2,
-            self.config['attacker_config']['high_level']['critic_lr'],
-            self.config['attacker_config']['high_level']['actor_lr'],
-            self.config['attacker_config']['high_level']['tau'],
-            self.config['attacker_config']['high_level']['gamma'],
-            self.config['attacker_config']['high_level']['target_allocation_noise_scale'],
-            self.config['attacker_config']['high_level']['actor_update_steps'],
-            OUActionNoise(
-                0,
-                self.config['attacker_config']['high_level']['noise']['scale'],
-                self.config['attacker_config']['high_level']['noise']['target'],
-                self.config['attacker_config']['high_level']['noise']['decay']
-            ),
-        )
-
-        budgeting = TD3Budgeting(
-            self.env.edge_component_mapping,
-            2,
-            self.config['attacker_config']['budgeting']['actor_lr'],
-            self.config['attacker_config']['budgeting']['critic_lr'],
-            self.config['attacker_config']['budgeting']['tau'],
-            self.config['attacker_config']['budgeting']['gamma'],
-            self.config['attacker_config']['budgeting']['actor_update_steps'],
-            self.config['attacker_config']['budgeting']['target_allocation_noise_scale'],
-            OUActionNoise(
-                0,
-                self.config['attacker_config']['budgeting']['noise']['scale'],
-                self.config['attacker_config']['budgeting']['noise']['target'],
-                self.config['attacker_config']['budgeting']['noise']['decay']
-            ),
-        )
-
-        attacker_model = Attacker(
-            'TD3Attacker',
-            self.env.edge_component_mapping,
-            budgeting=budgeting,
-            allocator=allocator,
-            component=component,
-            iterative_scheduler=LevelTrainingScheduler(['budgeting', 'allocator', 'component'], [10_000, 10_000, 10_000])
-        )
-
-        replay_buffer = dict(
-            component=ExperienceReplay(self.config['attacker_config']['buffer_size'],
-                                       self.config['attacker_config']['batch_size']),
-            allocator=ExperienceReplay(self.config['attacker_config']['buffer_size'],
-                                       self.config['attacker_config']['batch_size']),
-            budgeting=ExperienceReplay(self.config['attacker_config']['buffer_size'],
-                                       self.config['attacker_config']['batch_size'])
-        )
-        global_step = 0
+        replay_buffer = ExperienceReplay(self.config['attacker_config']['buffer_size'], self.config['attacker_config']['batch_size'])
         self.env.config['rewarding_rule'] = 'mixed'
 
-        for episode in (pbar := tqdm(range(self.config['attacker_config']['epochs']))):
-            done = False
-            truncated = False
-            obs = self.env.reset()
-            episode_reward = []
-            total_travel_time = []
-            step_count = 0
-            detector = self.defender_strategy_sets[
-                np.random.choice(len(self.defender_strategy_sets), p=probabilities)]
-            detected_at_step = self.env.config['horizon']
+        attacker_model = MixedTD3Attacker(
+            self.env.edge_component_mapping,
+            5,
+            self.config['attacker_config']['low_level']['actor_lr'],
+            self.config['attacker_config']['low_level']['critic_lr'],
+            self.config['attacker_config']['high_level']['actor_lr'],
+            self.config['attacker_config']['tau'],
+            self.config['attacker_config']['gamma'],
+            self.config['attacker_config']['actor_update_steps'],
+            self.config['attacker_config']['target_noise_scale'],
+        )
 
-            should_eval = episode % 10 == 0
-            env_string = 'eval' if should_eval else 'env'
+        done = False
+        truncated = False
+        obs = self.env.reset()
+        episode_reward = []
+        total_travel_time = []
+        step_count = 0
+        detector = self.defender_strategy_sets[
+            np.random.choice(len(self.defender_strategy_sets), p=probabilities)]
+        detected_at_step = self.env.config['horizon']
+        episode = 0
 
-            while not done and not truncated:
-                step_count += 1
-                global_step += 1
+        should_eval = episode % 10 == 0
+        env_string = 'eval' if should_eval else 'env'
 
-                constructed_action, action, allocation, budget = attacker_model.forward_single(obs,
-                                                                                              deterministic=should_eval)
-                perturbed_edge_travel_times = self.env.get_travel_times_assuming_the_attack(action)
-                detected = detector.forward_single(perturbed_edge_travel_times, True)
+        for global_step in (pbar := tqdm(range(self.config['attacker_config']['training_steps']))):
+            step_count += 1
 
-                if detected:
-                    detected_at_step = step_count
-                    value, cumulative_reward, steps, original_reward = self.__get_state_values_assuming_no_action(done)
-                    replay_buffer[attacker_model.iterative_scheduler.get_current_level()].add(
-                        obs, allocation, budget, action, value, obs, True, False)
-                    episode_reward.append(cumulative_reward)
-                    total_travel_time.extend(original_reward)
-                    step_count += steps
-                    writer.add_scalar(f'{env_string}/detected_value', np.sum(value), global_step)
-                    done = True
-                else:
-                    next_obs, reward, done, info = self.env.step(
-                        constructed_action
-                    )
-                    truncated = info.get('TimeLimit.truncated', False)
-                    total_travel_time.append(info.get('original_reward'))
-                    replay_buffer[attacker_model.iterative_scheduler.get_current_level()].add(obs, allocation, budget, action, reward, next_obs, done, truncated)
-                    obs = next_obs
-                    episode_reward.append(reward)
+            constructed_action, action, allocation, budget = attacker_model.forward_single(obs,
+                                                                                          deterministic=should_eval)
+            perturbed_edge_travel_times = self.env.get_travel_times_assuming_the_attack(action)
+            detected = detector.forward_single(perturbed_edge_travel_times, True)
 
-                writer.add_scalar(f'env/buffer_size_allocator', replay_buffer['allocator'].size(), global_step)
-                writer.add_scalar(f'env/buffer_size_component', replay_buffer['component'].size(), global_step)
-                writer.add_scalar(f'env/buffer_size_budgeting', replay_buffer['budgeting'].size(), global_step)
+            if detected:
+                detected_at_step = step_count
+                value, cumulative_reward, steps, original_reward = self.__get_state_values_assuming_no_action(done)
+                replay_buffer.add(
+                    obs, allocation, budget, action, value, obs, True, False)
+                episode_reward.append(cumulative_reward)
+                total_travel_time.extend(original_reward)
+                step_count += steps
+                writer.add_scalar(f'{env_string}/detected_value', np.sum(value), global_step)
+                done = True
+            else:
+                next_obs, reward, done, info = self.env.step(
+                    constructed_action
+                )
+                truncated = info.get('TimeLimit.truncated', False)
+                total_travel_time.append(info.get('original_reward'))
+                replay_buffer.add(obs, allocation, budget, action, reward, next_obs, done, truncated)
+                obs = next_obs
+                episode_reward.append(reward)
 
-                if replay_buffer[attacker_model.iterative_scheduler.get_current_level()].size() > self.config['attacker_config']['batch_size']:
-                    observations, allocations, budgets, actions, rewards, next_observations, dones, truncateds = replay_buffer[attacker_model.iterative_scheduler.get_current_level()].get_experiences()
-                    stats = attacker_model.update(observations, allocations, budgets, actions, rewards,
-                                                  next_observations, dones, truncateds)
-                    writer.add_stats(stats, global_step)
+            writer.add_scalar(f'env/buffer_size', replay_buffer.size(), global_step)
 
-                if attacker_model.iterative_scheduler.step():
-                    for buffer in replay_buffer.values():
-                        buffer.clear()
+            if replay_buffer.size() > self.config['attacker_config']['batch_size']:
+                observations, allocations, budgets, actions, rewards, next_observations, dones, truncateds = replay_buffer.get_experiences()
+                stats = attacker_model.update(observations, allocations, budgets, actions, rewards,
+                                              next_observations, dones, truncateds)
+                writer.add_stats(stats, global_step)
 
-                writer.add_scalar(f'{env_string}/attacker_budget', budget, global_step)
+            writer.add_scalar(f'{env_string}/attacker_budget', budget, global_step)
 
-            pbar.set_description(
-                f'Training {attacker_model.iterative_scheduler.get_current_level()} |'
-                f' ep: {episode} |'
-                f' Episode Reward {np.sum(np.array(episode_reward)):10.3f} |'
-                f' Detected {detected_at_step:10d} |'
-            )
+            if done or truncated:
+                pbar.set_description(
+                    f'Training Attacker |'
+                    f' ep: {episode} |'
+                    f' Episode Reward {np.sum(np.array(episode_reward)):10.3f} |'
+                    f' Detected {detected_at_step:10d} |'
+                )
 
-            writer.add_scalar(f'{env_string}/episode_reward', np.sum(episode_reward), global_step)
-            writer.add_scalar(f'{env_string}/total_travel_time', np.sum(total_travel_time), global_step)
-            writer.add_scalar(f'{env_string}/step_count', step_count, global_step)
-            writer.add_scalar(f'{env_string}/detected_at_step', detected_at_step, global_step)
+                writer.add_scalar(f'{env_string}/episode_reward', np.sum(episode_reward), global_step)
+                writer.add_scalar(f'{env_string}/total_travel_time', np.sum(total_travel_time), global_step)
+                writer.add_scalar(f'{env_string}/step_count', step_count, global_step)
+                writer.add_scalar(f'{env_string}/detected_at_step', detected_at_step, global_step)
+
+                episode += 1
+                obs = self.env.reset()
+                done = False
+                truncated = False
+                episode_reward = []
+                total_travel_time = []
+                step_count = 0
+                should_eval = episode % 10 == 0
+                detector = self.defender_strategy_sets[
+                    np.random.choice(len(self.defender_strategy_sets), p=probabilities)]
+                detected_at_step = self.env.config['horizon']
 
         weight_path = f'logs/{self.config["run_id"]}/weights'
         os.makedirs(weight_path, exist_ok=True)
@@ -231,81 +177,98 @@ class Trainer(CustomModule):
             self.config['detector_config']['buffer_size'],
             self.config['detector_config']['batch_size'])
 
-        global_step = 0
         self.env.config['rewarding_rule'] = 'proportional'
-        for episode in (pbar := tqdm(range(self.config['detector_config']['epochs']))):
-            attacker_present = random.random() < self.config['detector_config']['attacker_present_probability']
-            zero_attacker = Zero(self.env.edge_component_mapping)
-            attacker_model = self.attacker_strategy_sets[
-                np.random.choice(len(self.attacker_strategy_sets), p=probabilities)]
-            done = False
-            truncated = False
-            obs = self.env.reset()
-            step_count = 0
-            episode_rewards = []
-            total_travel_time = []
-            detected_at_step = self.env.config['horizon'] if attacker_present else -1
 
-            attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else \
+        attacker_present = random.random() < self.config['detector_config']['attacker_present_probability']
+        zero_attacker = Zero(self.env.edge_component_mapping)
+        attacker_model = self.attacker_strategy_sets[
+            np.random.choice(len(self.attacker_strategy_sets), p=probabilities)]
+        done = False
+        truncated = False
+        episode = 0
+        obs = self.env.reset()
+        step_count = 0
+        episode_rewards = []
+        total_travel_time = []
+        detected_at_step = self.env.config['horizon'] if attacker_present else -1
+
+        attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else \
             zero_attacker.forward_single(obs, True)[0]
 
-            while not done and not truncated:
-                step_count += 1
-                global_step += 1
+        for global_step in (pbar := tqdm(range(self.config['detector_config']['training_steps']))):
 
-                perturbed_edge_travel_times = self.env.get_travel_times_assuming_the_attack(attacker_action)
-                detected = detector_model.forward_single(perturbed_edge_travel_times, False)
-                detector_penalty = 0
+            step_count += 1
 
-                attack_correctly_detected = detected and attacker_present
-                false_positive = detected and not attacker_present
+            perturbed_edge_travel_times = self.env.get_travel_times_assuming_the_attack(attacker_action)
+            detected = detector_model.forward_single(perturbed_edge_travel_times, False)
+            detector_penalty = 0
 
-                if attack_correctly_detected:  # We neutralize the attack
-                    attacker_present = False
-                    detected_at_step = step_count
-                if false_positive:  # We penalize the detector
-                    detector_penalty = self.config['detector_config']['rho']
+            attack_correctly_detected = detected and attacker_present
+            false_positive = detected and not attacker_present
 
-                obs, reward, done, info = self.env.step(
-                    attacker_action if attacker_present else zero_attacker.forward_single(obs, True)[0]
-                )
+            if attack_correctly_detected:  # We neutralize the attack
+                attacker_present = False
+                detected_at_step = step_count
+            if false_positive:  # We penalize the detector
+                detector_penalty = self.config['detector_config']['rho']
 
-                truncated = info.get('TimeLimit.truncated', False)
-                travel_time = info.get('original_reward')
-                detector_reward = - sum(reward) - detector_penalty
+            obs, reward, done, info = self.env.step(
+                attacker_action if attacker_present else zero_attacker.forward_single(obs, True)[0]
+            )
 
-                episode_rewards.append(detector_reward)
-                total_travel_time.append(travel_time)
+            truncated = info.get('TimeLimit.truncated', False)
+            travel_time = info.get('original_reward')
+            detector_reward = - sum(reward) - detector_penalty
 
-                next_attacker_action, next_attacker_normalized_action, next_attacker_allocation, next_attacker_budget = attacker_model.forward_single(
-                    obs, True) if attacker_present else zero_attacker.forward_single(obs, True)
-                next_detector_observation = self.env.get_travel_times_assuming_the_attack(next_attacker_action)
+            episode_rewards.append(detector_reward)
+            total_travel_time.append(travel_time)
 
-                replay_buffer.add(
-                    perturbed_edge_travel_times,
-                    detected,
-                    detector_reward,
-                    next_detector_observation,
-                    done,
-                    truncated
-                )
+            next_attacker_action, next_attacker_normalized_action, next_attacker_allocation, next_attacker_budget = attacker_model.forward_single(
+                obs, True) if attacker_present else zero_attacker.forward_single(obs, True)
+            next_detector_observation = self.env.get_travel_times_assuming_the_attack(next_attacker_action)
 
-                writer.add_scalar('env/attacker_budget', next_attacker_budget, global_step)
+            replay_buffer.add(
+                perturbed_edge_travel_times,
+                detected,
+                detector_reward,
+                next_detector_observation,
+                done,
+                truncated
+            )
 
-                attacker_action = next_attacker_action
+            writer.add_scalar('env/attacker_budget', next_attacker_budget, global_step)
 
-                if replay_buffer.size() > self.config['detector_config']['batch_size']:
-                    states, actions, rewards, next_states, dones, truncateds = replay_buffer.get_experiences()
-                    stats = detector_model.update(states, actions, next_states, rewards, dones)
-                    writer.add_stats(stats, global_step)
+            attacker_action = next_attacker_action
 
-            writer.add_scalar('env/detected_at_step', detected_at_step, global_step)
-            writer.add_scalar('env/total_travel_time', np.sum(total_travel_time), global_step)
-            writer.add_scalar('env/episode_reward', np.sum(episode_rewards), global_step)
-            writer.add_scalar('env/step_count', step_count, global_step)
-            writer.add_scalar('env/buffer_size', replay_buffer.size(), global_step)
-            pbar.set_description(
-                f'Training Detector | ep: {episode} | Rewards {np.sum(episode_rewards):10.3f} | detected {detected_at_step:10d} |')
+            if replay_buffer.size() > self.config['detector_config']['batch_size']:
+                states, actions, rewards, next_states, dones, truncateds = replay_buffer.get_experiences()
+                stats = detector_model.update(states, actions, next_states, rewards, dones)
+                writer.add_stats(stats, global_step)
+
+            if done or truncated:
+                writer.add_scalar('env/detected_at_step', detected_at_step, global_step)
+                writer.add_scalar('env/total_travel_time', np.sum(total_travel_time), global_step)
+                writer.add_scalar('env/episode_reward', np.sum(episode_rewards), global_step)
+                writer.add_scalar('env/step_count', step_count, global_step)
+                writer.add_scalar('env/buffer_size', replay_buffer.size(), global_step)
+                pbar.set_description(
+                    f'Training Detector | ep: {episode} | Rewards {np.sum(episode_rewards):10.3f} | detected {detected_at_step:10d} |')
+
+                episode += 1
+                obs = self.env.reset()
+                done = False
+                truncated = False
+                episode_rewards = []
+                total_travel_time = []
+                step_count = 0
+                attacker_present = random.random() < self.config['detector_config']['attacker_present_probability']
+                attacker_model = self.attacker_strategy_sets[
+                    np.random.choice(len(self.attacker_strategy_sets), p=probabilities)]
+                zero_attacker = Zero(self.env.edge_component_mapping)
+                attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else \
+                    zero_attacker.forward_single(obs, True)[0]
+                detected_at_step = self.env.config['horizon'] if attacker_present else -1
+
 
         weight_path = f'logs/{self.config["run_id"]}/weights'
         os.makedirs(weight_path, exist_ok=True)

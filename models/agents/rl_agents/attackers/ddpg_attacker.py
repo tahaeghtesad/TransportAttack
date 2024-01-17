@@ -1,9 +1,10 @@
 import torch.nn
 
-from models import CustomModule, BudgetingInterface, NoiseInterface
-from models.rl_attackers import BaseAttacker
 import torch
 
+from models import CustomModule
+from models.agents import BudgetingInterface
+from models.agents.rl_agents.attackers.rl_attackers import BaseAttacker
 from util.torch.math import r2_score
 from util.torch.misc import hard_sync, soft_sync
 
@@ -82,7 +83,7 @@ class QCritic(CustomModule):
 class FixedBudgetNetworkedWideDDPG(BaseAttacker):
 
     def __init__(self, edge_component_mapping, budgeting: BudgetingInterface, n_features, actor_lr, critic_lr, gamma,
-                 tau, target_noise_scale, noise: NoiseInterface) -> None:
+                 tau) -> None:
         super().__init__('FixedBudgetNetworkedWideDDPG', edge_component_mapping)
         self.budgeting = budgeting
 
@@ -92,8 +93,6 @@ class FixedBudgetNetworkedWideDDPG(BaseAttacker):
         self.critic_lr = critic_lr
         self.gamma = gamma
         self.tau = tau
-        self.noise = noise
-        self.target_noise_scale = target_noise_scale
 
         self.actor = DeterministicActor(n_features, self.n_edges, actor_lr)
         self.target_actor = DeterministicActor(n_features, self.n_edges, actor_lr)
@@ -109,17 +108,9 @@ class FixedBudgetNetworkedWideDDPG(BaseAttacker):
 
     def forward(self, observation, deterministic):
         with torch.no_grad():
-            target_action_noise_distribution = torch.distributions.Normal(loc=0.0, scale=self.target_noise_scale)
-
             aggregated_state = self._aggregate_state(observation)
             budgets = self.budgeting.forward(aggregated_state, deterministic)
             actions = self.actor.forward(observation, budgets)
-            actions = torch.nn.functional.normalize(
-                torch.maximum(actions + target_action_noise_distribution.sample(actions.shape), torch.zeros_like(actions, device=self.device)), p=1, dim=1)
-
-        if not deterministic:
-            actions = torch.nn.functional.normalize(
-                torch.maximum(actions + self.noise(actions.shape), torch.zeros_like(actions, device=self.device)))
 
         return actions * budgets, actions, torch.zeros((observation.shape[0], self.n_components)), budgets
 
@@ -156,14 +147,13 @@ class FixedBudgetNetworkedWideDDPG(BaseAttacker):
             'attacker/q_min': target_value.min().cpu().numpy().item(),
             'attacker/q_mean': target_value.mean().cpu().numpy().item(),
             'attacker/r2': r2_score(target_value, current_value).detach().cpu().numpy().item(),
-            'attacker/noise': self.noise.get_current_noise().detach().cpu().numpy().item()
         }
 
 
 class FixedBudgetNetworkedWideTD3(FixedBudgetNetworkedWideDDPG):
     def __init__(self, edge_component_mapping, budgeting: BudgetingInterface, n_features, actor_lr, critic_lr, gamma,
-                 tau, actor_update_interval, noise: NoiseInterface) -> None:
-        super().__init__(edge_component_mapping, budgeting, n_features, actor_lr, critic_lr, gamma, tau, noise)
+                 tau, actor_update_interval) -> None:
+        super().__init__(edge_component_mapping, budgeting, n_features, actor_lr, critic_lr, gamma, tau)
 
         self.actor_update_interval = actor_update_interval
 
@@ -206,7 +196,6 @@ class FixedBudgetNetworkedWideTD3(FixedBudgetNetworkedWideDDPG):
             'attacker/q_min': target_value.min().cpu().numpy().item(),
             'attacker/q_mean': target_value.mean().cpu().numpy().item(),
             'attacker/r2': r2_score(target_value, current_value).detach().cpu().numpy().item(),
-            'attacker/noise': self.noise.get_current_noise().detach().cpu().numpy().item()
         }
 
         if self.last_actor_update % self.actor_update_interval == 0:

@@ -7,12 +7,11 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from models.attack_heuristics import Zero
-from models.dl.noise import ZeroNoise
-from models.heuristics.allocators import ProportionalAllocator
-from models.heuristics.budgeting import FixedBudgeting
-from models.heuristics.component import GreedyComponent
-from models.rl_attackers import FixedBudgetNetworkedWideGreedy, Attacker
+from models.agents.heuristics.attackers.allocators import ProportionalAllocator
+from models.agents.heuristics.attackers.attackers import Zero
+from models.agents.heuristics.attackers.budgeting import FixedBudgeting
+from models.agents.heuristics.attackers.component import GreedyComponent
+from models.agents.rl_agents.attackers.rl_attackers import FixedBudgetNetworkedWideGreedy, Attacker
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
 from util.graphing import create_box_plot
 
@@ -60,11 +59,11 @@ if __name__ == '__main__':
 
         models = [
             Zero(env.edge_component_mapping),
-            FixedBudgetNetworkedWideGreedy(env.edge_component_mapping, _budget, ZeroNoise()),
+            FixedBudgetNetworkedWideGreedy(env.edge_component_mapping, _budget),
             Attacker(
                 'FixedBudgetProportionalAllocationGreedyComponent',
                 env.edge_component_mapping,
-                FixedBudgeting(_budget, ZeroNoise()),
+                FixedBudgeting(_budget),
                 ProportionalAllocator(),
                 GreedyComponent(env.edge_component_mapping)
             ),

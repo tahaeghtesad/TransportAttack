@@ -3,9 +3,10 @@ from abc import abstractmethod, ABC
 import numpy as np
 import torch.nn
 
-from models import AttackerInterface, BudgetingInterface, AllocatorInterface, ComponentInterface, \
-    NoBudgetAllocatorInterface
-from models.heuristics.budgeting import FixedBudgeting
+from models.agents import AttackerInterface, BudgetingInterface
+from models.agents.heuristics.attackers.budgeting import FixedBudgeting
+from models.agents.rl_agents.attackers.allocators import AllocatorInterface, NoBudgetAllocatorInterface
+from models.agents.rl_agents.attackers.component import ComponentInterface
 from util.scheduler import LevelTrainingScheduler
 
 
@@ -61,9 +62,9 @@ class BaseAttacker(AttackerInterface, ABC):
 
 class FixedBudgetNetworkedWideGreedy(BaseAttacker):
 
-    def __init__(self, edge_component_mapping, budget, budget_noise) -> None:
+    def __init__(self, edge_component_mapping, budget) -> None:
         super().__init__(name='FixedBudgetNetworkedWideGreedy', edge_component_mapping=edge_component_mapping)
-        self.budgeting = FixedBudgeting(budget, budget_noise)
+        self.budgeting = FixedBudgeting(budget)
 
     def forward(self, observation, deterministic):
         actions = torch.nn.functional.normalize(observation[:, :, 0], dim=1, p=1) * self.budgeting.budget

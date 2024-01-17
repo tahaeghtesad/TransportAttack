@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 from models import CustomModule
-from models.rl_attackers import BaseAttacker
+from models.agents.rl_agents.attackers.rl_attackers import BaseAttacker
 from util.visualize import Timer
 
 

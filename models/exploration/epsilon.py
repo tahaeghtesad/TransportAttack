@@ -1,6 +1,6 @@
 import torch
 
-from models import EpsilonInterface
+from models.exploration import EpsilonInterface
 
 
 class DecayEpsilon(EpsilonInterface):

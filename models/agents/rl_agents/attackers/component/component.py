@@ -3,7 +3,8 @@ import logging
 import numpy as np
 import torch
 
-from models import ComponentInterface, CustomModule
+from models import CustomModule
+from models.agents.rl_agents.attackers.component import ComponentInterface
 from util.torch.math import r2_score
 from util.torch.misc import hard_sync, soft_sync
 from util.torch.rl import GeneralizedAdvantageEstimation
@@ -148,7 +149,7 @@ class StochasticActor(CustomModule):
 
 
 class DDPGComponent(ComponentInterface):
-    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise) -> None:
+    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma) -> None:
         super().__init__(name='DDPGComponent')
         self.tau = tau
         self.gamma = gamma
@@ -156,7 +157,6 @@ class DDPGComponent(ComponentInterface):
         self.n_components = len(edge_component_mapping)
         self.critic_lr = critic_lr
         self.actor_lr = actor_lr
-        self.noise = noise
 
         self.critics = torch.nn.ModuleList([
             QCritic(f'Critic-{i}', len(edge_component_mapping[i]), n_features, critic_lr) for i
@@ -225,11 +225,7 @@ class DDPGComponent(ComponentInterface):
         return self.__forward_actor(self.target_actors, states, budgets, allocations, deterministic)
 
     def forward(self, states, budgets, allocations, deterministic):
-        action = self.forward_actor(states, budgets, allocations, deterministic)
-        if not deterministic:
-            return self.__normalize_action(action + self.noise(action.shape), allocations, budgets)
-        else:
-            return action
+        return self.forward_actor(states, budgets, allocations, deterministic)
 
     def __normalize_action(self, action, allocations, budget):
         action = torch.maximum(action, torch.zeros_like(action))
@@ -358,9 +354,7 @@ class DDPGComponent(ComponentInterface):
             for c in range(self.n_components):
                 returnable_stats[f'component/{k}/{c}'] = v[c]
 
-        return returnable_stats | {
-            'component/noise': self.noise.get_current_noise(),
-        }
+        return returnable_stats
 
     def update(self, states, actions, budgets, allocations, next_states, next_budgets, next_allocations, rewards, dones, truncateds):
         return self.__update_multi_agent(
@@ -528,8 +522,7 @@ class PPOComponent(ComponentInterface):
 
         return actions
 
-    def update(self, states, actions, budgets, allocations, next_states, next_budgets, next_allocations, rewards, dones,
-               truncateds):
+    def update(self, states, actions, budgets, allocations, next_states, next_budgets, next_allocations, rewards, dones, truncateds):
         stats = {}
         for c in range(self.n_components):
             stats |= self.agents[c].update(
@@ -547,8 +540,8 @@ class PPOComponent(ComponentInterface):
 
 class TD3Component(DDPGComponent):
 
-    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, target_action_noise_scale, actor_update_steps, noise) -> None:
-        super().__init__(edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise)
+    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, target_action_noise_scale, actor_update_steps) -> None:
+        super().__init__(edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma)
 
         self.target_action_noise_scale = target_action_noise_scale
         self.actor_update_steps = actor_update_steps

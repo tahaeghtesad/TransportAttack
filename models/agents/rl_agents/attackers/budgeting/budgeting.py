@@ -2,8 +2,8 @@ import logging
 
 import torch
 
-from models import BudgetingInterface, CustomModule
-from models.dl.noise import OUActionNoise
+from models import CustomModule
+from models.agents import BudgetingInterface
 from util.torch.math import r2_score
 from util.torch.misc import hard_sync, soft_sync
 
@@ -62,7 +62,7 @@ class DeterministicActor(CustomModule):
 
 
 class DDPGBudgeting(BudgetingInterface):
-    def __init__(self, edge_component_mapping, n_features, actor_lr, critic_lr, tau, gamma, noise):
+    def __init__(self, edge_component_mapping, n_features, actor_lr, critic_lr, tau, gamma):
         super().__init__(name='Budgeting')
 
         self.edge_component_mapping = edge_component_mapping
@@ -72,7 +72,6 @@ class DDPGBudgeting(BudgetingInterface):
         self.gamma = gamma
         self.actor_lr = actor_lr
         self.critic_lr = critic_lr
-        self.noise = noise
 
         self.actor = DeterministicActor(self.n_components, n_features, actor_lr)
         self.critic = QCritic(self.n_components, n_features, critic_lr)
@@ -83,10 +82,7 @@ class DDPGBudgeting(BudgetingInterface):
         hard_sync(self.target_critic, self.critic)
 
     def forward(self, aggregated_state, deterministic):
-        action = self.actor.forward(aggregated_state, deterministic=deterministic)
-        if not deterministic:
-            return torch.maximum(action + self.noise(action.shape), torch.zeros_like(action))
-        return action
+        return self.actor.forward(aggregated_state, deterministic=deterministic)
 
     def update(self, aggregated_states, budgets, rewards, next_aggregated_states, dones, truncateds):
         # Update critic
@@ -119,14 +115,13 @@ class DDPGBudgeting(BudgetingInterface):
             'budgeting/q_loss': critic_loss.detach().cpu().item(),
             'budgeting/max_q': target.max().detach().cpu().item(),
             'budgeting/min_q': target.min().detach().cpu().item(),
-            'budgeting/noise': self.noise.get_current_noise().detach().cpu().numpy().item(),
             'budgeting/r2': max(r2_score(target, value).detach().cpu().item(), -1),
         }
 
 
 class TD3Budgeting(DDPGBudgeting):
-    def __init__(self, edge_component_mapping, n_features, actor_lr, critic_lr, tau, gamma, actor_update_steps, target_allocation_noise, noise):
-        super().__init__(edge_component_mapping, n_features, actor_lr, critic_lr, tau, gamma, noise)
+    def __init__(self, edge_component_mapping, n_features, actor_lr, critic_lr, tau, gamma, actor_update_steps, target_allocation_noise):
+        super().__init__(edge_component_mapping, n_features, actor_lr, critic_lr, tau, gamma)
 
         self.target_allocation_noise = target_allocation_noise
         self.actor_update_steps = actor_update_steps
@@ -172,7 +167,6 @@ class TD3Budgeting(DDPGBudgeting):
             'budgeting/q_loss': critic_loss.detach().cpu().item(),
             'budgeting/max_q': target.max().detach().cpu().item(),
             'budgeting/min_q': target.min().detach().cpu().item(),
-            'budgeting/noise': self.noise.get_current_noise().detach().cpu().numpy().item(),
             'budgeting/r2': max(r2_score(target, value).detach().cpu().item(), -1),
         }
 

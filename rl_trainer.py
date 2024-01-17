@@ -10,10 +10,9 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from models.ddpg_attacker import FixedBudgetNetworkedWideTD3
-from models.dl.noise import OUActionNoise
-from models.heuristics.budgeting import FixedBudgeting
-from models.ppo_attacker import FixedBudgetNetworkedWidePPO
+from models.agents.heuristics.attackers.budgeting import FixedBudgeting
+from models.agents.rl_agents.attackers.ddpg_attacker import FixedBudgetNetworkedWideTD3
+from models.agents.rl_agents.attackers.ppo_attacker import FixedBudgetNetworkedWidePPO
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
 from util.rl.experience_replay import TrajectoryExperience, ExperienceReplay
 from util.torch.writer import TBStatWriter
@@ -218,13 +217,12 @@ if __name__ == '__main__':
     def td3_model_creator(env):
         return FixedBudgetNetworkedWideTD3(
             env.edge_component_mapping,
-            budgeting=FixedBudgeting(30, OUActionNoise(mean=0.0, std_deviation=0.5, target_scale=0.0001, decay=10_000)),
+            budgeting=FixedBudgeting(30),
             n_features=5,
             actor_lr=0.0003,
             critic_lr=0.0003,
             gamma=0.97,
             tau=0.001,
-            noise=OUActionNoise(mean=0.0, std_deviation=0.5, target_scale=0.0001, decay=20_000),
             actor_update_interval=3,
         )
 

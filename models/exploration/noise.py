@@ -1,6 +1,6 @@
 import torch
 
-from models import NoiseInterface, DecayingNoiseInterface
+from models.exploration import DecayingNoiseInterface, NoiseInterface
 
 
 class GaussianNoiseDecay(DecayingNoiseInterface):

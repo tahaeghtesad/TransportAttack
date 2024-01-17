@@ -2,8 +2,9 @@ import numpy as np
 import torch
 import torch.nn
 
-from models import CustomModule, BudgetingInterface
-from models.rl_attackers import BaseAttacker
+from models import CustomModule
+from models.agents import BudgetingInterface
+from models.agents.rl_agents.attackers.rl_attackers import BaseAttacker
 from util.torch.rl import GeneralizedAdvantageEstimation
 
 

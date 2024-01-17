@@ -3,9 +3,8 @@ from datetime import datetime
 import numpy as np
 import torch
 
+from models.agents.rl_agents.attackers.rl_attackers import FixedBudgetNetworkedWideGreedy
 from models.double_oracle.trainer import Trainer
-from models.heuristics.detectors import ZeroDetector
-from models.rl_attackers import FixedBudgetNetworkedWideGreedy
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
 
 if __name__ == '__main__':
@@ -32,57 +31,27 @@ if __name__ == '__main__':
 
     config = dict(
         run_id=f'{datetime.now().strftime("%Y%m%d%H%M%S%f")}',
-        rl_config=dict(
-            gamma=0.95,
-        ),
         attacker_config=dict(
-            buffer_size=10_000,
+            buffer_size=50_000,
             batch_size=64,
-            epochs=8192,
-            iterate_interval=[2_000, 1_000],  # Low Level First
+            # training_steps=1024*256,
+            training_steps=1000,
+            gamma=0.99,
+            tau=0.001,
+            target_noise_scale=0.001,
+            actor_update_steps=2,
             high_level=dict(
-                critic_lr=1e-2,
-                actor_lr=5e-4,
-                tau=0.001,
-                gamma=0.99,
-                target_allocation_noise_scale=0.001,
-                actor_update_steps=2,
-                noise=dict(
-                    scale=1.0,
-                    target=0.001,
-                    decay=10_000
-                ),
+                actor_lr=1e-3,
             ),
             low_level=dict(
-                critic_lr=1e-2,
-                actor_lr=5e-4,
-                tau=0.001,
-                gamma=0.99,
-                target_allocation_noise_scale=0.001,
-                actor_update_steps=2,
-                noise=dict(
-                    scale=0.5,
-                    target=0.000,
-                    decay=10_000
-                ),
+                actor_lr=1e-3,
+                critic_lr=1e-3,
             ),
-            budgeting=dict(
-                critic_lr=1e-2,
-                actor_lr=5e-4,
-                tau=0.001,
-                gamma=0.99,
-                target_allocation_noise_scale=0.001,
-                actor_update_steps=2,
-                noise=dict(
-                    scale=10.0,
-                    target=0.000,
-                    decay=10_000
-                ),
-            )
         ),
         detector_config=dict(
             batch_size=64,
-            epochs=3072,
+            # training_steps=1024*128,
+            training_steps=1000,
             buffer_size=50_000,
             gamma=0.99,
             lr=1e-3,
@@ -96,18 +65,18 @@ if __name__ == '__main__':
             )
         ),
         do_config=dict(
-            testing_epochs=32,
+            testing_epochs=1,
             iterations=1,
         )
     )
 
     trainer = Trainer(config, env)
 
-    attacker_0 = FixedBudgetNetworkedWideGreedy(env.edge_component_mapping, 30, 0.005)
+    attacker_0 = FixedBudgetNetworkedWideGreedy(env.edge_component_mapping, 30)
     trainer.attacker_strategy_sets.append(attacker_0)
     # detector_0 = trainer.train_detector([1.0])
-    detector_0 = torch.load('logs/20240109160407894747/weights/defender_0.tar')
     # detector_0 = ZeroDetector()
+    detector_0 = torch.load('logs/20240117170802748703/weights/defender_0.tar')
     trainer.defender_strategy_sets.append(detector_0)
     attacker_payoff = trainer.get_attacker_payoff(attacker_0)
     trainer.append_defender_payoffs([p[0] for p in attacker_payoff])

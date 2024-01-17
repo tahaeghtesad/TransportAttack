@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 
-from models import AllocatorInterface, DecayingNoiseInterface, CustomModule, NoBudgetAllocatorInterface
+from models import CustomModule
+from models.agents.rl_agents.attackers.allocators import AllocatorInterface, NoBudgetAllocatorInterface
 from util.torch.math import r2_score, explained_variance
 from util.torch.misc import hard_sync, soft_sync
 from util.torch.rl import GeneralizedAdvantageEstimation
@@ -249,7 +250,7 @@ class DSPGAllocator(AllocatorInterface):
 
 
 class DDPGAllocator(AllocatorInterface):
-    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise: DecayingNoiseInterface):
+    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma):
         super().__init__(name='DDPGBudgetAllocator')
         self.edge_component_mapping = edge_component_mapping
         self.n_components = len(edge_component_mapping)
@@ -262,8 +263,6 @@ class DDPGAllocator(AllocatorInterface):
         self.actor = DeterministicActor(self.n_components, n_features, actor_lr)
         self.target_critic = QCritic(self.n_components, n_features, critic_lr)
         self.target_actor = DeterministicActor(self.n_components, n_features, actor_lr)
-
-        self.noise = noise
 
         self.tau = tau
         self.gamma = gamma
@@ -314,7 +313,6 @@ class DDPGAllocator(AllocatorInterface):
             'allocator/q_mean': q_values.mean().detach().cpu().item(),
             'allocator/a_val': -actor_loss.detach().cpu().item(),
             'allocator/r2': max(r2_score(target_q_values, q_values).detach().cpu().item(), -1),
-            'allocator/noise': self.noise.get_current_noise().detach().cpu().item(),
         }
 
 
@@ -531,7 +529,7 @@ class NoBudgetDeterministicActor(CustomModule):
 
 
 class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
-    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, target_allocation_noise_scale, actor_update_steps, noise: DecayingNoiseInterface):
+    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, target_allocation_noise_scale, actor_update_steps):
         super().__init__(name='TD3NoBudgetAllocator')
 
         self.edge_component_mapping = edge_component_mapping
@@ -541,7 +539,6 @@ class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
         self.actor_lr = actor_lr
         self.tau = tau
         self.gamma = gamma
-        self.noise = noise
         self.target_allocation_noise_scale = target_allocation_noise_scale
         self.actor_update_steps = actor_update_steps
         self.training_step = 0
@@ -560,14 +557,7 @@ class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
         hard_sync(self.target_critic_1, self.critic_1)
 
     def forward(self, aggregated_state, deterministic):
-
-        with torch.no_grad():
-            action = self.actor.forward(aggregated_state)
-
-        if not deterministic:
-            action = torch.maximum(self.noise.forward(action.shape) + action, torch.tensor(0, device=self.device))
-
-        return action
+        return self.actor.forward(aggregated_state)
 
     def update(self, aggregated_states, allocations, rewards, next_aggregated_states, dones,
                truncateds):
@@ -608,7 +598,6 @@ class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
             'allocator/q_mean': q_values.mean().detach().cpu().item(),
             'allocator/rewards': rewards.max().detach().cpu().item(),
             'allocator/r2': max(r2_score(target_q_values, q_values).detach().cpu().item(), -1),
-            'allocator/noise': self.noise.get_current_noise().detach().cpu().item(),
         }
 
         # Update actor
@@ -633,9 +622,8 @@ class TD3NoBudgetAllocator(NoBudgetAllocatorInterface):
 
 class TD3Allocator(DDPGAllocator):
     def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma,
-                    target_allocation_noise_scale, actor_update_steps,
-                 noise: DecayingNoiseInterface):
-        super().__init__(edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise)
+                    target_allocation_noise_scale, actor_update_steps):
+        super().__init__(edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma)
         self.target_allocation_noise_scale = target_allocation_noise_scale
         self.actor_update_steps = actor_update_steps
 
@@ -687,7 +675,6 @@ class TD3Allocator(DDPGAllocator):
             'allocator/q_mean': q_values.mean().detach().cpu().item(),
             'allocator/rewards': rewards.max().detach().cpu().item(),
             'allocator/r2': max(r2_score(target_q_values, q_values).detach().cpu().item(), -1),
-            'allocator/noise': self.noise.get_current_noise().detach().cpu().item(),
         }
 
         # Update actor

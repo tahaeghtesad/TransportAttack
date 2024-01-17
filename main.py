@@ -4,7 +4,7 @@ import sys
 import numpy as np
 from tqdm import tqdm
 
-from models.attack_heuristics import Zero
+from models.agents.heuristics.attackers.attackers import Zero
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
 
 if __name__ == '__main__':
