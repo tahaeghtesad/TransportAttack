@@ -4,6 +4,7 @@ import numpy as np
 import torch
 
 from models.double_oracle.trainer import Trainer
+from models.heuristics.detectors import ZeroDetector
 from models.rl_attackers import FixedBudgetNetworkedWideGreedy
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
 
@@ -16,9 +17,9 @@ if __name__ == '__main__':
             # file='GRE-4x4-0.5051-0.1111-20240105112518456990_high',
             # file='GRE-4x4-0.5051-0.1111-20240105112519255865_default',
             # file='GRE-4x4-0.5051-0.1111-20240105112519374509_low',
-            randomize_factor=0.5,
+            randomize_factor=0.0,
         ),
-        horizon=50,
+        horizon=200,
         render_mode=None,
         congestion=True,
         # rewarding_rule='normalized',
@@ -33,40 +34,56 @@ if __name__ == '__main__':
         run_id=f'{datetime.now().strftime("%Y%m%d%H%M%S%f")}',
         rl_config=dict(
             gamma=0.95,
-            buffer_size=100_000,
-            batch_size=64,
-            epochs=3072,
         ),
         attacker_config=dict(
-            iterate_interval=5_000,
+            buffer_size=10_000,
+            batch_size=64,
+            epochs=8192,
+            iterate_interval=[2_000, 1_000],  # Low Level First
             high_level=dict(
-                critic_lr=1e-4,
-                actor_lr=1e-5,
+                critic_lr=1e-2,
+                actor_lr=5e-4,
                 tau=0.001,
                 gamma=0.99,
                 target_allocation_noise_scale=0.001,
-                actor_update_steps=3,
+                actor_update_steps=2,
                 noise=dict(
-                    scale=0.5,
+                    scale=1.0,
                     target=0.001,
                     decay=10_000
                 ),
             ),
             low_level=dict(
-                critic_lr=1e-4,
-                actor_lr=5e-5,
+                critic_lr=1e-2,
+                actor_lr=5e-4,
                 tau=0.001,
-                gamma=0.9,
-                target_allocation_noise_scale=0.0001,
+                gamma=0.99,
+                target_allocation_noise_scale=0.001,
                 actor_update_steps=2,
                 noise=dict(
                     scale=0.5,
                     target=0.000,
                     decay=10_000
                 ),
+            ),
+            budgeting=dict(
+                critic_lr=1e-2,
+                actor_lr=5e-4,
+                tau=0.001,
+                gamma=0.99,
+                target_allocation_noise_scale=0.001,
+                actor_update_steps=2,
+                noise=dict(
+                    scale=10.0,
+                    target=0.000,
+                    decay=10_000
+                ),
             )
         ),
         detector_config=dict(
+            batch_size=64,
+            epochs=3072,
+            buffer_size=50_000,
             gamma=0.99,
             lr=1e-3,
             tau=0.001,

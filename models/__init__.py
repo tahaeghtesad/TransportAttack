@@ -52,7 +52,7 @@ class BudgetingInterface(CustomModule):
         raise NotImplementedError()
 
     @abstractmethod
-    def update(self, aggregated_state, budget, reward, next_aggregated_state, done, truncateds):
+    def update(self, aggregated_states, budgets, rewards, next_aggregated_states, dones, truncateds):
         raise NotImplementedError()
 
 

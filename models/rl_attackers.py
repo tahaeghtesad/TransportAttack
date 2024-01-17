@@ -104,6 +104,7 @@ class Attacker(BaseAttacker):
 
     def _update(self, observation, allocations, budgets, actions, rewards, next_observations, dones, truncateds):
         with torch.no_grad():
+            aggregated_states = self._aggregate_state(observation)
             next_aggregated = self._aggregate_state(next_observations)
             next_budgets = self.budgeting.forward(next_aggregated, deterministic=True)
             next_allocations = self.allocator.forward(next_aggregated, next_budgets,
@@ -127,7 +128,7 @@ class Attacker(BaseAttacker):
 
         if self.iterative_scheduler.should_train('allocator'):
             stats |= self.allocator.update(
-                aggregated_states=next_aggregated,
+                aggregated_states=aggregated_states,
                 allocations=allocations,
                 budgets=budgets,
                 rewards=torch.sum(rewards, dim=1, keepdim=True),
@@ -139,11 +140,12 @@ class Attacker(BaseAttacker):
 
         if self.iterative_scheduler.should_train('budgeting'):
             stats |= self.budgeting.update(
-                aggregated_state=next_aggregated,
-                budget=next_budgets,
-                reward=torch.sum(rewards, dim=1, keepdim=True),
-                next_aggregated_state=next_aggregated,
-                done=dones,
+                # aggregated_state, budget, reward, next_aggregated_state, done, truncateds
+                aggregated_states=aggregated_states,
+                budgets=budgets,
+                rewards=torch.sum(rewards, dim=1, keepdim=True),
+                next_aggregated_states=next_aggregated,
+                dones=dones,
                 truncateds=truncateds,
             )
 
@@ -175,6 +177,7 @@ class NoBudgetAttacker(BaseAttacker):
 
     def _update(self, observation, allocations, budgets, actions, rewards, next_observations, dones, truncateds):
         with torch.no_grad():
+            aggregated_states = self._aggregate_state(observation)
             next_aggregated = self._aggregate_state(next_observations)
             next_allocations_times_budget = self.allocator.forward(next_aggregated, deterministic=True)
             next_allocations = torch.nn.functional.normalize(next_allocations_times_budget, dim=1, p=1)
@@ -198,7 +201,7 @@ class NoBudgetAttacker(BaseAttacker):
 
         if self.iterative_scheduler.should_train('allocator'):
             stats |= self.allocator.update(
-                aggregated_states=next_aggregated,
+                aggregated_states=aggregated_states,
                 allocations=allocations * budgets,
                 rewards=torch.sum(rewards, dim=1, keepdim=True),
                 next_aggregated_states=next_aggregated,

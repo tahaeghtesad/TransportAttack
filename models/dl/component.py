@@ -82,7 +82,7 @@ class DeterministicActor(CustomModule):
             torch.nn.ReLU(),
             torch.nn.Linear(512, n_edges),
             # torch.nn.Softmax(dim=1),
-            torch.nn.ReLU()
+            torch.nn.Softplus()
             # torch.nn.Sigmoid()
         )
 
@@ -547,7 +547,7 @@ class PPOComponent(ComponentInterface):
 
 class TD3Component(DDPGComponent):
 
-    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise, target_action_noise_scale, actor_update_steps) -> None:
+    def __init__(self, edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, target_action_noise_scale, actor_update_steps, noise) -> None:
         super().__init__(edge_component_mapping, n_features, critic_lr, actor_lr, tau, gamma, noise)
 
         self.target_action_noise_scale = target_action_noise_scale

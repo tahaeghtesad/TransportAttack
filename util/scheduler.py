@@ -3,8 +3,10 @@ from models import CustomModule
 
 class LevelTrainingScheduler(CustomModule):
 
-    def __init__(self, names, steps):
+    def __init__(self, names: list, steps: list):
         super().__init__('LevelTrainingScheduler')
+
+        assert len(names) == len(steps), f'Length of names and steps should be the same. Got {len(names)} and {len(steps)}.'
 
         self.iteration = 0
         self.global_step = 0
@@ -26,7 +28,7 @@ class LevelTrainingScheduler(CustomModule):
 
         self.global_step += 1
 
-        if self.global_step >= self.steps:
+        if self.global_step >= self.steps[self.iteration % self.counts]:
             self.iteration += 1
             self.global_step = 0
             return True
