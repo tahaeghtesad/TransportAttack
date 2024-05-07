@@ -33,6 +33,13 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
                 edge_attr=True,
                 create_using=nx.DiGraph
             )
+            nx.set_node_attributes(
+                self.base,
+                tntp.load_locations(f'{base_path}/TransportationNetworks/{city}/{city}_node.tntp')
+                    .set_index('Node', inplace=False)
+                    .to_dict(orient='index')
+            )
+
             self.logger.info(f'City {city} has {self.base.number_of_nodes()} nodes and {self.base.number_of_edges()} edges.')
 
         elif config['network']['method'] == 'generate':
@@ -180,6 +187,7 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
                 if t.prev_node is not None:
                     edge = (t.prev_node, t.next_node)
                     feature_vector[edges[edge]][3] += (t.time_to_next / self.get_travel_time(*edge, self.base.get_edge_data(*edge), on_edge[edge])) * t.count  # feature 3
+                    # feature_vector[edges[edge]][5] += t.count  # feature 5
 
         for i, e in enumerate(self.base.edges):
             feature_vector[i][1] = on_edge[e]  # feature 1

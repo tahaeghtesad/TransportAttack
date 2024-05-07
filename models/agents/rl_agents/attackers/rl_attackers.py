@@ -7,7 +7,7 @@ from models.agents import AttackerInterface, BudgetingInterface
 from models.agents.heuristics.attackers.budgeting import FixedBudgeting
 from models.agents.rl_agents.attackers.allocators import AllocatorInterface, NoBudgetAllocatorInterface
 from models.agents.rl_agents.attackers.component import ComponentInterface
-from util.scheduler import LevelTrainingScheduler
+from util.scheduler import LevelTrainingScheduler, TrainingScheduler
 
 
 class BaseAttacker(AttackerInterface, ABC):
@@ -43,14 +43,12 @@ class BaseAttacker(AttackerInterface, ABC):
         raise NotImplementedError('Should not be called in base class')
 
     def _aggregate_state(self, states):
-        aggregated = torch.empty((states.shape[0], self.n_components, 2), device=self.device)
+        aggregated = torch.empty((states.shape[0], self.n_components, 5), device=self.device)
         for c in range(self.n_components):
-            aggregated[:, c, 0] = torch.sum(
-                states[:, self.edge_component_mapping[c], 1], dim=1
-            )
-            aggregated[:, c, 1] = torch.sum(
-                states[:, self.edge_component_mapping[c], 2], dim=1
-            )
+            for f in range(5):
+                aggregated[:, c, f] = torch.sum(
+                    states[:, self.edge_component_mapping[c], f], dim=1
+                )
         return aggregated
 
     def _construct_action(self, actions, allocations, budgets):
@@ -85,7 +83,7 @@ class Attacker(BaseAttacker):
             budgeting: BudgetingInterface,
             allocator: AllocatorInterface,
             component: ComponentInterface,
-            iterative_scheduler: LevelTrainingScheduler,
+            iterative_scheduler: TrainingScheduler,
     ):
         super().__init__(name=name, edge_component_mapping=edge_component_mapping)
 
@@ -141,7 +139,6 @@ class Attacker(BaseAttacker):
 
         if self.iterative_scheduler.should_train('budgeting'):
             stats |= self.budgeting.update(
-                # aggregated_state, budget, reward, next_aggregated_state, done, truncateds
                 aggregated_states=aggregated_states,
                 budgets=budgets,
                 rewards=torch.sum(rewards, dim=1, keepdim=True),
@@ -158,7 +155,7 @@ class NoBudgetAttacker(BaseAttacker):
             self, name, edge_component_mapping,
             allocator: NoBudgetAllocatorInterface,
             component: ComponentInterface,
-            iterative_scheduler: LevelTrainingScheduler,
+            iterative_scheduler: TrainingScheduler,
     ):
         super().__init__(name=name, edge_component_mapping=edge_component_mapping)
 
@@ -168,19 +165,16 @@ class NoBudgetAttacker(BaseAttacker):
         self.iterative_scheduler = iterative_scheduler
 
     def forward(self, observation, deterministic):
-        aggregated = self._aggregate_state(observation)
-        allocations = self.allocator.forward(aggregated, deterministic=False if self.iterative_scheduler.should_train('allocator') else True)
+        allocations = self.allocator.forward(observation, deterministic=deterministic)
         budgets = torch.sum(allocations, dim=1, keepdim=True)
         normalized_allocations = torch.nn.functional.normalize(allocations, dim=1, p=1)
-        actions = self.component.forward(observation, budgets, normalized_allocations, deterministic=False if self.iterative_scheduler.should_train('component') else True)
+        actions = self.component.forward(observation, budgets, normalized_allocations, deterministic=deterministic)
         constructed_action = self._construct_action(actions, allocations, budgets)
-        return constructed_action, actions, allocations, budgets
+        return constructed_action, actions, normalized_allocations, budgets
 
     def _update(self, observation, allocations, budgets, actions, rewards, next_observations, dones, truncateds):
         with torch.no_grad():
-            aggregated_states = self._aggregate_state(observation)
-            next_aggregated = self._aggregate_state(next_observations)
-            next_allocations_times_budget = self.allocator.forward(next_aggregated, deterministic=True)
+            next_allocations_times_budget = self.allocator.forward_target(next_observations, deterministic=True)
             next_allocations = torch.nn.functional.normalize(next_allocations_times_budget, dim=1, p=1)
             next_budgets = torch.sum(next_allocations_times_budget, dim=1, keepdim=True)
 
@@ -202,10 +196,10 @@ class NoBudgetAttacker(BaseAttacker):
 
         if self.iterative_scheduler.should_train('allocator'):
             stats |= self.allocator.update(
-                aggregated_states=aggregated_states,
-                allocations=allocations * budgets,
+                states=observation,
+                allocations_times_budgets=allocations * budgets,
                 rewards=torch.sum(rewards, dim=1, keepdim=True),
-                next_aggregated_states=next_aggregated,
+                next_states=next_observations,
                 dones=dones,
                 truncateds=truncateds,
             )

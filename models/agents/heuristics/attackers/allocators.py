@@ -1,6 +1,6 @@
 import torch
 
-from models import AllocatorInterface
+from models.agents.rl_agents.attackers.allocators import AllocatorInterface
 
 
 class ProportionalAllocator(AllocatorInterface):

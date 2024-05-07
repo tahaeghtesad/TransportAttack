@@ -34,24 +34,25 @@ if __name__ == '__main__':
         attacker_config=dict(
             buffer_size=50_000,
             batch_size=64,
-            # training_steps=1024*256,
-            training_steps=1000,
+            training_steps=1024*256,
+            # training_steps=1000,
             gamma=0.99,
             tau=0.001,
             target_noise_scale=0.001,
             actor_update_steps=2,
             high_level=dict(
-                actor_lr=1e-3,
+                actor_lr=1e-4,
+                critic_lr=5e-2,
             ),
             low_level=dict(
-                actor_lr=1e-3,
-                critic_lr=1e-3,
+                actor_lr=1e-4,
+                critic_lr=1e-2,
             ),
         ),
         detector_config=dict(
             batch_size=64,
-            # training_steps=1024*128,
-            training_steps=1000,
+            training_steps=1024*32,
+            # training_steps=1000,
             buffer_size=50_000,
             gamma=0.99,
             lr=1e-3,
@@ -59,8 +60,8 @@ if __name__ == '__main__':
             attacker_present_probability=0.5,
             rho=200.0,
             epsilon=dict(
-                start=1.0,
-                end=0.05,
+                start=0.0,
+                end=0.00,
                 decay=5_000
             )
         ),
@@ -71,32 +72,33 @@ if __name__ == '__main__':
     )
 
     trainer = Trainer(config, env)
+    trainer.train_simple_attacker()
 
-    attacker_0 = FixedBudgetNetworkedWideGreedy(env.edge_component_mapping, 30)
-    trainer.attacker_strategy_sets.append(attacker_0)
-    # detector_0 = trainer.train_detector([1.0])
-    # detector_0 = ZeroDetector()
-    detector_0 = torch.load('logs/20240117170802748703/weights/defender_0.tar')
-    trainer.defender_strategy_sets.append(detector_0)
-    attacker_payoff = trainer.get_attacker_payoff(attacker_0)
-    trainer.append_defender_payoffs([p[0] for p in attacker_payoff])
-
-    for do_iteration in range(config['do_config']['iterations']):
-
-        print(f'DO iteration {do_iteration}')
-
-        probabilities = trainer.solve_defender()
-        attacker_i = trainer.train_attacker(probabilities)
-        trainer.attacker_strategy_sets.append(attacker_i)
-        payoff = trainer.get_attacker_payoff(attacker_i)
-        trainer.append_attacker_payoffs([p[0] for p in payoff])
-
-        probabilities = trainer.solve_attacker()
-        defender_i = trainer.train_detector(probabilities)
-        trainer.defender_strategy_sets.append(defender_i)
-        payoff = trainer.get_defender_payoff(defender_i)
-        trainer.append_defender_payoffs([p[0] for p in payoff])
-
-        print(f'Attacker Strat = {trainer.solve_attacker()}')
-        print(f'Defender Strat = {trainer.solve_defender()}')
-        print(f'New MSNE payoff: {np.dot(np.dot(trainer.solve_attacker(), np.array(trainer.payoff_table)), trainer.solve_defender())}')
+    # attacker_0 = FixedBudgetNetworkedWideGreedy(env.edge_component_mapping, 30)
+    # trainer.attacker_strategy_sets.append(attacker_0)
+    # # detector_0 = trainer.train_detector([1.0])
+    # # detector_0 = ZeroDetector()
+    # # detector_0 = torch.load('logs/20240117180002635045/weights/defender_0.tar')
+    # trainer.defender_strategy_sets.append(detector_0)
+    # attacker_payoff = trainer.get_attacker_payoff(attacker_0)
+    # trainer.append_defender_payoffs([p[0] for p in attacker_payoff])
+    #
+    # for do_iteration in range(config['do_config']['iterations']):
+    #
+    #     print(f'DO iteration {do_iteration}')
+    #
+    #     probabilities = trainer.solve_defender()
+    #     attacker_i = trainer.train_attacker(probabilities)
+    #     trainer.attacker_strategy_sets.append(attacker_i)
+    #     payoff = trainer.get_attacker_payoff(attacker_i)
+    #     trainer.append_attacker_payoffs([p[0] for p in payoff])
+    #
+    #     probabilities = trainer.solve_attacker()
+    #     defender_i = trainer.train_detector(probabilities)
+    #     trainer.defender_strategy_sets.append(defender_i)
+    #     payoff = trainer.get_defender_payoff(defender_i)
+    #     trainer.append_defender_payoffs([p[0] for p in payoff])
+    #
+    #     print(f'Attacker Strat = {trainer.solve_attacker()}')
+    #     print(f'Defender Strat = {trainer.solve_defender()}')
+    #     print(f'New MSNE payoff: {np.dot(np.dot(trainer.solve_attacker(), np.array(trainer.payoff_table)), trainer.solve_defender())}')

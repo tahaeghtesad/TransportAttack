@@ -45,3 +45,8 @@ def load_net(path):
     #                       np.ones_like(net_data[:, 4]), net_data[:, 2]]).T
 
     return net
+
+
+def load_locations(path):
+    net = pd.read_csv(path, sep='\t').drop(';', axis=1).apply(pd.to_numeric)
+    return net

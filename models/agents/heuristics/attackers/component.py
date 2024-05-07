@@ -1,6 +1,6 @@
 import torch.nn
 
-from models import ComponentInterface
+from models.agents.rl_agents.attackers.component import ComponentInterface
 
 
 class GreedyComponent(ComponentInterface):

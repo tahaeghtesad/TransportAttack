@@ -17,3 +17,6 @@ class TBStatWriter:
 
     def add_scalar(self, name, value, step):
         self.writer.add_scalar(name, value, step)
+
+    def add_histogram(self, name, value, step):
+        self.writer.add_histogram(name, value, step)

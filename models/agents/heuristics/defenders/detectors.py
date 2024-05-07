@@ -1,6 +1,6 @@
 import torch
 
-from models.dl.detectors import BaseDetector
+from models.agents.rl_agents.defenders.detectors.detectors import BaseDetector
 
 
 class ZeroDetector(BaseDetector):

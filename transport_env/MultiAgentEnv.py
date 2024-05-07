@@ -169,6 +169,7 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
         info['vehicles_making_decision'] = sum(on_vertex.values())
         if self.time_step >= self.config['horizon']:
             info['TimeLimit.truncated'] = True
+        info['component_time_diff'] = component_time_diff
 
         feature_vector = self.get_current_observation_edge_vector()
 
@@ -183,7 +184,7 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
         elif self.config['rewarding_rule'] == 'arrived':
             reward = -arrived_vehicles
         elif self.config['rewarding_rule'] == 'mixed':
-            reward = (vehicles_in_component + component_time_diff) / self.max_number_of_vehicles
+            reward = vehicles_in_component / self.max_number_of_vehicles + 0.5 * component_time_diff
         else:
             raise Exception(f'Rewarding rule {self.config["rewarding_rule"]} not implemented.')
 
@@ -235,7 +236,7 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
                             centroids[comp] = source
 
         for e in self.base.edges:
-            self.base.edges[e]['component'] = self.base.nodes[e[0]]['component']
+            self.base.edges[e]['component'] = self.base.nodes[e[1]]['component']
 
         # Calculating metrics:
         sizes = [0 for _ in range(n_components)]

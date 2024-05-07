@@ -101,7 +101,7 @@ def gen(rows, columns, p, q, trip_density='high'):
         trips = get_trips(graph, trip_size_mean=4)
     write_trips(trips, f'{name}_{trip_density}')
     nx.draw_kamada_kawai(graph, with_labels=True)
-    plt.show()
+    plt.savefig(f'TransportationNetworks/Generated/{name}.png')
     print(f'tries: {tries}')
     print(name)
     print(f'n_edges: {len(graph.edges)}')
@@ -110,9 +110,10 @@ def gen(rows, columns, p, q, trip_density='high'):
 
 if __name__ == '__main__':
 
-    rows = 4
-    columns = 4
+    # rows = 4
+    # columns = 4
 
-    gen(rows, columns, 0.5051, 0.1111, 'high')
-    gen(rows, columns, 0.5051, 0.1111, 'default')
-    gen(rows, columns, 0.5051, 0.1111, 'low')
+    # gen(rows, columns, 0.5051, 0.1111, 'high')
+    # gen(rows, columns, 0.5051, 0.1111, 'default')
+    # gen(rows, columns, 0.5051, 0.1111, 'low')
+    gen(3, 3, 0.5051, 0.1111, 'default')

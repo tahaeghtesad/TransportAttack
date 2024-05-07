@@ -3,13 +3,30 @@ import torch
 from models.exploration import DecayingNoiseInterface, NoiseInterface
 
 
+class GaussianNoise(NoiseInterface):
+    def __init__(self, mean, std_deviation):
+        super().__init__('GaussianNoise')
+        self.mean = mean
+        self.std_dev = std_deviation
+
+    def forward(self, shape):
+        return torch.normal(self.mean, self.std_dev, shape, device=self.device)
+
+    def get_current_noise(self):
+        return self.std_dev
+
+    def extra_repr(self) -> str:
+        return f'mean={self.mean:.2f}, std_dev={self.std_dev:.2f}'
+
+
 class GaussianNoiseDecay(DecayingNoiseInterface):
-    def __init__(self, start, end, decay):
+    def __init__(self, mean, start, end, decay):
         super().__init__('NoiseDecay', start, end, decay)
+        self.mean = mean
 
     def forward(self, shape):
         self.step += 1
-        return torch.normal(0, self.get_current_noise(), shape, device=self.device)
+        return torch.normal(self.mean, self.get_current_noise(), shape, device=self.device)
 
     def get_current_noise(self):
         return self.end + (self.start - self.end) * torch.exp(

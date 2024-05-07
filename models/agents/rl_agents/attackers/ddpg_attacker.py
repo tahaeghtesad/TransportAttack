@@ -20,16 +20,15 @@ class DeterministicActor(CustomModule):
 
         self.state_extractor = torch.nn.Sequential(
             torch.nn.Flatten(),
-            torch.nn.Linear(n_features * n_edges, 512),
-            torch.nn.ReLU(),
+            torch.nn.Linear(n_features * n_edges, 32),
+            torch.nn.Tanh(),
         )
 
         self.model = torch.nn.Sequential(
-            torch.nn.Linear(512 + 1, 512),
-            torch.nn.ReLU(),
-            torch.nn.Linear(512, 512),
-            torch.nn.ReLU(),
-            torch.nn.Linear(512, n_edges),
+            torch.nn.Linear(32, 32),
+            torch.nn.Tanh(),
+            torch.nn.Linear(32, n_edges),
+            torch.nn.Sigmoid()
         )
 
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -39,13 +38,13 @@ class DeterministicActor(CustomModule):
 
     def forward(self, observation, budget):
         logits = self.model(
-            torch.cat((self.state_extractor(observation), budget), dim=1)
+            self.state_extractor(observation)
         )
-        return torch.nn.functional.normalize(logits)
+        return torch.nn.functional.normalize(logits, dim=1, p=1)
 
 
 class QCritic(CustomModule):
-    def __init__(self, n_features, n_edges, lr):
+    def __init__(self, n_features, n_edges, lr, adj):
         super().__init__('Critic')
 
         self.n_features = n_features
@@ -54,35 +53,37 @@ class QCritic(CustomModule):
 
         self.state_extractor = torch.nn.Sequential(
             torch.nn.Flatten(),
-            torch.nn.Linear(n_features * n_edges, 512),
-            torch.nn.ReLU(),
+            torch.nn.Linear(n_features * n_edges, 32),
+            torch.nn.Tanh(),
         )
 
         self.action_extractor = torch.nn.Sequential(
-            torch.nn.Linear(n_edges, 512),
-            torch.nn.ReLU(),
+            torch.nn.Linear(n_edges, 32),
+            torch.nn.Tanh(),
         )
 
         self.model = torch.nn.Sequential(
-            torch.nn.Linear(512 * 2 + 1, 512),
-            torch.nn.ReLU(),
-            torch.nn.Linear(512, 1),
+            torch.nn.Linear(32 * 2, 32),
+            torch.nn.Tanh(),
+            torch.nn.Linear(32, 1),
         )
 
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+
+        self.adj = torch.from_numpy(adj).float().to(self.device)
 
     def extra_repr(self) -> str:
         return f'n_features={self.n_features}, n_edges={self.n_edges}, lr={self.lr}'
 
     def forward(self, observation, action, budget):
         return self.model(
-            torch.cat((self.state_extractor(observation), self.action_extractor(action), budget), dim=1)
-        )
+            torch.cat((self.state_extractor(observation), self.action_extractor(action)), dim=1)
+        )# + torch.sum(self.adj * (observation[:, :, [2]] + observation[:, :, [3]]), dim=1)
 
 
 class FixedBudgetNetworkedWideDDPG(BaseAttacker):
 
-    def __init__(self, edge_component_mapping, budgeting: BudgetingInterface, n_features, actor_lr, critic_lr, gamma,
+    def __init__(self, adj, edge_component_mapping, budgeting: BudgetingInterface, n_features, actor_lr, critic_lr, gamma,
                  tau) -> None:
         super().__init__('FixedBudgetNetworkedWideDDPG', edge_component_mapping)
         self.budgeting = budgeting
@@ -97,8 +98,8 @@ class FixedBudgetNetworkedWideDDPG(BaseAttacker):
         self.actor = DeterministicActor(n_features, self.n_edges, actor_lr)
         self.target_actor = DeterministicActor(n_features, self.n_edges, actor_lr)
 
-        self.critic = QCritic(n_features, self.n_edges, critic_lr)
-        self.target_critic = QCritic(n_features, self.n_edges, critic_lr)
+        self.critic = QCritic(n_features, self.n_edges, critic_lr, adj)
+        self.target_critic = QCritic(n_features, self.n_edges, critic_lr, adj)
 
         hard_sync(self.target_critic, self.critic)
         hard_sync(self.target_actor, self.actor)
@@ -112,7 +113,7 @@ class FixedBudgetNetworkedWideDDPG(BaseAttacker):
             budgets = self.budgeting.forward(aggregated_state, deterministic)
             actions = self.actor.forward(observation, budgets)
 
-        return actions * budgets, actions, torch.zeros((observation.shape[0], self.n_components)), budgets
+        return actions * budgets, actions, torch.ones((observation.shape[0], self.n_components)), budgets
 
     def _update(self, observation, allocations, budgets, action, reward, next_observation, done, truncateds):
         with torch.no_grad():
@@ -143,22 +144,23 @@ class FixedBudgetNetworkedWideDDPG(BaseAttacker):
 
         return {
             'attacker/q_loss': loss.detach().cpu().numpy().item(),
-            'attacker/q_max': target_value.max().cpu().numpy().item(),
-            'attacker/q_min': target_value.min().cpu().numpy().item(),
-            'attacker/q_mean': target_value.mean().cpu().numpy().item(),
+            'attacker/target_max': target_value.max().cpu().numpy().item(),
+            'attacker/target_min': target_value.min().cpu().numpy().item(),
+            'attacker/target_mean': target_value.mean().cpu().numpy().item(),
             'attacker/r2': r2_score(target_value, current_value).detach().cpu().numpy().item(),
         }
 
 
 class FixedBudgetNetworkedWideTD3(FixedBudgetNetworkedWideDDPG):
-    def __init__(self, edge_component_mapping, budgeting: BudgetingInterface, n_features, actor_lr, critic_lr, gamma,
-                 tau, actor_update_interval) -> None:
-        super().__init__(edge_component_mapping, budgeting, n_features, actor_lr, critic_lr, gamma, tau)
+    def __init__(self, adj, edge_component_mapping, budgeting: BudgetingInterface, n_features, actor_lr, critic_lr, gamma,
+                 tau, actor_update_interval, actor_noise) -> None:
+        super().__init__(adj, edge_component_mapping, budgeting, n_features, actor_lr, critic_lr, gamma, tau)
 
         self.actor_update_interval = actor_update_interval
+        self.actor_noise = actor_noise
 
-        self.critic_2 = QCritic(n_features, self.n_edges, critic_lr)
-        self.target_critic_2 = QCritic(n_features, self.n_edges, critic_lr)
+        self.critic_2 = QCritic(n_features, self.n_edges, critic_lr, adj)
+        self.target_critic_2 = QCritic(n_features, self.n_edges, critic_lr, adj)
 
         hard_sync(self.target_critic_2, self.critic_2)
 
@@ -170,32 +172,36 @@ class FixedBudgetNetworkedWideTD3(FixedBudgetNetworkedWideDDPG):
             next_budget = self.budgeting.forward(next_aggregated_state, True)
             next_action = self.target_actor.forward(next_observation, next_budget)
 
+            noise = torch.normal(0, self.actor_noise, next_action.shape, device=self.device)
+            next_noisy_action = torch.nn.functional.normalize(torch.maximum(next_action + noise, torch.zeros_like(next_action, device=self.device)), p=1, dim=1)
+
             target_value = torch.sum(reward, dim=1, keepdim=True) + self.gamma * (
                     1 - done) * torch.minimum(
-                self.target_critic.forward(next_observation, next_action, next_budget),
-                self.target_critic_2.forward(next_observation, next_action, next_budget)
+                self.target_critic.forward(next_observation, next_noisy_action, next_budget),
+                self.target_critic_2.forward(next_observation, next_noisy_action, next_budget)
             )
 
-        current_value = self.critic.forward(observation, action, budgets)
-        loss = torch.nn.functional.mse_loss(target_value, current_value)
+        current_value_0 = self.critic.forward(observation, action, budgets)
+        loss_0 = torch.nn.functional.mse_loss(target_value, current_value_0)
 
         self.critic.optimizer.zero_grad()
-        loss.backward()
+        loss_0.backward()
         self.critic.optimizer.step()
 
-        current_value = self.critic_2.forward(observation, action, budgets)
-        loss = torch.nn.functional.mse_loss(target_value, current_value)
+        current_value_1 = self.critic_2.forward(observation, action, budgets)
+        loss_1 = torch.nn.functional.mse_loss(target_value, current_value_1)
 
         self.critic_2.optimizer.zero_grad()
-        loss.backward()
+        loss_1.backward()
         self.critic_2.optimizer.step()
 
         stats = {
-            'attacker/q_loss': loss.detach().cpu().numpy().item(),
-            'attacker/q_max': target_value.max().cpu().numpy().item(),
-            'attacker/q_min': target_value.min().cpu().numpy().item(),
-            'attacker/q_mean': target_value.mean().cpu().numpy().item(),
-            'attacker/r2': r2_score(target_value, current_value).detach().cpu().numpy().item(),
+            'attacker/q_loss': loss_0.detach().cpu().numpy().item(),
+            'attacker/q_loss_1': loss_1.detach().cpu().numpy().item(),
+            'attacker/target_max': target_value.max().cpu().numpy().item(),
+            'attacker/target_min': target_value.min().cpu().numpy().item(),
+            'attacker/target_mean': target_value.mean().cpu().numpy().item(),
+            'attacker/r2': r2_score(target_value, current_value_0).detach().cpu().numpy().item(),
         }
 
         if self.last_actor_update % self.actor_update_interval == 0:

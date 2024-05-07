@@ -68,7 +68,7 @@ class BaseDetector(DetectorInterface):
 
 
 class DoubleDQNDetector(BaseDetector):
-    def __init__(self, n_edges, n_features, gamma, tau, lr, epsilon):
+    def __init__(self, n_edges, n_features, gamma, tau, lr):
         super(DetectorInterface, self).__init__('DoubleDQNDetector')
 
         self.n_edges = n_edges
@@ -76,7 +76,6 @@ class DoubleDQNDetector(BaseDetector):
         self.lr = lr
         self.gamma = gamma
         self.tau = tau
-        self.epsilon = epsilon
 
         self.model = QCritic(n_features, n_edges, lr)
         self.target_model = QCritic(n_features, n_edges, lr)
@@ -84,12 +83,7 @@ class DoubleDQNDetector(BaseDetector):
         hard_sync(self.target_model, self.model)
 
     def forward(self, edge_travel_times, deterministic=True):
-        with torch.no_grad():
-            policy_action = torch.argmax(self.model.forward(edge_travel_times), dim=1, keepdim=True)
-        if deterministic:
-            return policy_action
-        else:
-            return torch.randint_like(policy_action, low=0, high=2) if self.epsilon() else policy_action
+        return torch.argmax(self.model.forward(edge_travel_times), dim=1, keepdim=True)
 
     def _update(self, edge_travel_times, decisions, next_edge_travel_times, rewards, dones):
         with torch.no_grad():
@@ -108,7 +102,6 @@ class DoubleDQNDetector(BaseDetector):
         return {
             'detector/q_loss': loss.cpu().detach().numpy().item(),
             'detector/r2': r2_score(target_q_values, q_values).cpu().detach().numpy().item(),
-            'detector/epsilon': self.epsilon.get_current_epsilon().cpu().detach().numpy().item(),
             'detector/max_q': q_values.max().cpu().detach().numpy().item(),
             'detector/mean_q': q_values.mean().cpu().detach().numpy().item(),
             'detector/min_q': q_values.min().cpu().detach().numpy().item(),

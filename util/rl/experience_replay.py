@@ -49,18 +49,18 @@ class ExperienceReplay:
         self.truncateds.clear()
 
     def get_experiences(self):
-            indices = random.choices(range(self.size()), k=self.batch_size)
+        indices = random.choices(range(self.size()), k=self.batch_size)
 
-            return (
-                [self.states[i] for i in indices],
-                [self.allocations[i] for i in indices],
-                [self.budgets[i] for i in indices],
-                [self.actions[i] for i in indices],
-                [self.rewards[i] for i in indices],
-                [self.next_states[i] for i in indices],
-                [self.dones[i] for i in indices],
-                [self.truncateds[i] for i in indices],
-            )
+        return (
+            [self.states[i] for i in indices],
+            [self.allocations[i] for i in indices],
+            [self.budgets[i] for i in indices],
+            [self.actions[i] for i in indices],
+            [self.rewards[i] for i in indices],
+            [self.next_states[i] for i in indices],
+            [self.dones[i] for i in indices],
+            [self.truncateds[i] for i in indices],
+        )
 
 
 class TrajectoryExperience:

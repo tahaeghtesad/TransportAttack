@@ -7,14 +7,21 @@ import torch
 from tqdm import tqdm
 
 from models import CustomModule
+from models.agents.epsilon_greedy import EpsilonGreedyDetector
 from models.agents.heuristics.attackers.attackers import Zero
+from models.agents.heuristics.attackers.component import GreedyComponent
+from models.agents.noisy_agent import NoisyAttacker
+from models.agents.rl_agents.attackers.allocators.allocators import TD3NoBudgetAllocator
+from models.agents.rl_agents.attackers.component.maddpg_component import MATD3Component
 from models.agents.rl_agents.attackers.mixed_td3_attacker import MixedTD3Attacker
-from models.agents.rl_agents.attackers.rl_attackers import BaseAttacker
+from models.agents.rl_agents.attackers.rl_attackers import BaseAttacker, NoBudgetAttacker
 from models.agents.rl_agents.defenders.detectors.detectors import BaseDetector, DoubleDQNDetector
 from models.exploration.epsilon import DecayEpsilon
+from models.exploration.noise import OUActionNoise, ZeroNoise, GaussianNoiseDecay
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
-from util.math import solve_lp
+from util.math import solve_lp, sigmoid
 from util.rl.experience_replay import ExperienceReplay, BasicExperienceReplay
+from util.scheduler import LevelTrainingScheduler, SimultaneousTrainingScheduler
 from util.torch.writer import TBStatWriter
 
 
@@ -32,7 +39,7 @@ class Trainer(CustomModule):
         self.payoff_table = []
 
     def __get_state_values_assuming_no_action(self, done):
-        gamma = self.config['attacker_config']['gamma']
+        gamma = self.config['attacker_config']['gamma'] * 0
 
         truncated = False
         immediate_rewards = []
@@ -60,19 +67,25 @@ class Trainer(CustomModule):
 
         writer = TBStatWriter(f'logs/{self.config["run_id"]}/attacker_{index}/')
 
-        replay_buffer = ExperienceReplay(self.config['attacker_config']['buffer_size'], self.config['attacker_config']['batch_size'])
+        replay_buffer = ExperienceReplay(self.config['attacker_config']['buffer_size'],
+                                         self.config['attacker_config']['batch_size'])
         self.env.config['rewarding_rule'] = 'mixed'
 
-        attacker_model = MixedTD3Attacker(
-            self.env.edge_component_mapping,
-            5,
-            self.config['attacker_config']['low_level']['actor_lr'],
-            self.config['attacker_config']['low_level']['critic_lr'],
-            self.config['attacker_config']['high_level']['actor_lr'],
-            self.config['attacker_config']['tau'],
-            self.config['attacker_config']['gamma'],
-            self.config['attacker_config']['actor_update_steps'],
-            self.config['attacker_config']['target_noise_scale'],
+        attacker_model = NoisyAttacker(
+            MixedTD3Attacker(
+                self.env.edge_component_mapping,
+                5,
+                self.config['attacker_config']['low_level']['actor_lr'],
+                self.config['attacker_config']['low_level']['critic_lr'],
+                self.config['attacker_config']['high_level']['actor_lr'],
+                self.config['attacker_config']['tau'],
+                self.config['attacker_config']['gamma'],
+                self.config['attacker_config']['actor_update_steps'],
+                self.config['attacker_config']['target_noise_scale'],
+            ),
+            budget_noise=OUActionNoise(0.0, 5.0, 0.0, 5_000),
+            allocation_noise=ZeroNoise(),
+            action_noise=ZeroNoise()
         )
 
         done = False
@@ -85,7 +98,6 @@ class Trainer(CustomModule):
             np.random.choice(len(self.defender_strategy_sets), p=probabilities)]
         detected_at_step = self.env.config['horizon']
         episode = 0
-
         should_eval = episode % 10 == 0
         env_string = 'eval' if should_eval else 'env'
 
@@ -93,8 +105,8 @@ class Trainer(CustomModule):
             step_count += 1
 
             constructed_action, action, allocation, budget = attacker_model.forward_single(obs,
-                                                                                          deterministic=should_eval)
-            perturbed_edge_travel_times = self.env.get_travel_times_assuming_the_attack(action)
+                                                                                           deterministic=should_eval)
+            perturbed_edge_travel_times = self.env.get_travel_times_assuming_the_attack(constructed_action)
             detected = detector.forward_single(perturbed_edge_travel_times, True)
 
             if detected:
@@ -151,6 +163,8 @@ class Trainer(CustomModule):
                 detector = self.defender_strategy_sets[
                     np.random.choice(len(self.defender_strategy_sets), p=probabilities)]
                 detected_at_step = self.env.config['horizon']
+                should_eval = episode % 10 == 0
+                env_string = 'eval' if should_eval else 'env'
 
         weight_path = f'logs/{self.config["run_id"]}/weights'
         os.makedirs(weight_path, exist_ok=True)
@@ -159,12 +173,14 @@ class Trainer(CustomModule):
 
     def train_detector(self, probabilities) -> BaseDetector:  # returns defender strategy
         assert len(self.attacker_strategy_sets) == len(probabilities)
-        detector_model = DoubleDQNDetector(
-            self.env.base.number_of_edges(),
-            1,
-            self.config['detector_config']['gamma'],
-            self.config['detector_config']['tau'],
-            self.config['detector_config']['lr'],
+        detector_model = EpsilonGreedyDetector(
+            DoubleDQNDetector(
+                self.env.base.number_of_edges(),
+                1,
+                self.config['detector_config']['gamma'],
+                self.config['detector_config']['tau'],
+                self.config['detector_config']['lr'],
+            ),
             epsilon=DecayEpsilon(
                 self.config['detector_config']['epsilon']['start'],
                 self.config['detector_config']['epsilon']['end'],
@@ -268,7 +284,6 @@ class Trainer(CustomModule):
                 attacker_action = attacker_model.forward_single(obs, True)[0] if attacker_present else \
                     zero_attacker.forward_single(obs, True)[0]
                 detected_at_step = self.env.config['horizon'] if attacker_present else -1
-
 
         weight_path = f'logs/{self.config["run_id"]}/weights'
         os.makedirs(weight_path, exist_ok=True)
