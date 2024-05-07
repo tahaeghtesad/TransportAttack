@@ -367,11 +367,9 @@ if __name__ == '__main__':
         for j in range(len(self_edge_component_mapping[i])):
             self_edge_component_mapping[i][j] -= 1
 
-
     attacker_model = FixedBudgetNetworkedWidePPO(
         self_edge_component_mapping,
         FixedBudgeting(30.0),
-        env.get_adjacency_matrix(),
         5,
         0.0001,
         0.0001,
