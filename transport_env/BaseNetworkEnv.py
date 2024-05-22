@@ -192,7 +192,7 @@ class BaseTransportationNetworkEnv(gym.Env, ABC):
         for i, e in enumerate(self.base.edges):
             feature_vector[i][1] = on_edge[e]  # feature 1
 
-        return feature_vector / self.max_number_of_vehicles
+        return feature_vector
 
     def get_adjacency_matrix(self):
         adjacency_matrix = np.zeros((self.base.number_of_edges(), self.base.number_of_edges()), dtype=np.float32)

@@ -7,7 +7,6 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 from transport_env.BaseNetworkEnv import BaseTransportationNetworkEnv
-from util.math import sigmoid
 
 
 class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetworkEnv):
@@ -60,24 +59,26 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
         on_edge = self.get_on_edge_vehicles()
         on_vertex = self.get_on_vertex_vehicles()
 
-        # # Calculating component action allocation penalty
-        # component_allocation = np.zeros(self.n_components)
-        # for c in range(self.n_components):
-        #     component_allocation[c] = np.sum(action[self.edge_component_mapping[c]])
-        # component_allocation_norm = np.linalg.norm(component_allocation, ord=self.norm)
-        # component_allocation = np.divide(component_allocation, component_allocation_norm, where=component_allocation_norm != 0)
-        # component_action_penalty = np.maximum(0, component_allocation - self.last_allocation)
-        #
-        # # Normalizing to component allocation
-        # for c in range(self.n_components):
-        #     component_norm = np.linalg.norm(action[self.edge_component_mapping[c]], ord=self.norm)
-        #     action[self.edge_component_mapping[c]] = np.divide(action[self.edge_component_mapping[c]], component_norm, where=component_norm != 0) * self.allocation * self.last_allocation[c]
-
-        # Calculating the transition
-
         perturbed = dict()
         for i, e in enumerate(self.base.edges):
             perturbed[e] = action[i]
+
+        # calculating shortest paths with and without the attack
+        unperturbed_time = dict(nx.all_pairs_bellman_ford_path_length(
+            self.base,
+            weight=lambda u, v, d: self.get_travel_time(u, v, d, on_edge[(u, v)])
+        ))
+        perturbed_path = dict(nx.all_pairs_bellman_ford_path(
+            self.base,
+            weight=lambda u, v, d: self.get_travel_time(u, v, d, on_edge[(u, v)]) + perturbed[(u, v)]
+        ))
+        perturbed_time = dict(nx.all_pairs_bellman_ford_path_length(
+            self.base,
+            weight=lambda u, v, d: self.get_travel_time(u, v, d, on_edge[(u, v)]) + perturbed[(u, v)]
+        ))
+
+
+        # Calculating the transition
 
         currently_finished = 0
         component_time_diff = np.zeros(self.n_components)
@@ -95,28 +96,9 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
 
             # vehicle is on a node, we will calculate the next node and send the vehicle on that destination
             if trip.time_to_next == 0:
-                path = nx.shortest_path(
-                    self.base,
-                    trip.next_node,
-                    trip.destination,
-                    weight=lambda u, v, d: self.get_travel_time(u, v, d, on_edge[(u, v)]) + perturbed[(u, v)]
-                )
-                path_weights = [
-                    self.get_travel_time(path[i], path[i + 1], self.base.get_edge_data(path[i], path[i + 1]),
-                                         on_edge[(path[i], path[i + 1])]) for i in range(len(path) - 1)]
-                original_path = nx.shortest_path(
-                    self.base,
-                    trip.next_node,
-                    trip.destination,
-                    weight=lambda u, v, d: self.get_travel_time(u, v, d, on_edge[(u, v)])
-                )
-                original_path_weights = [self.get_travel_time(original_path[i], original_path[i + 1],
-                                                              self.base.get_edge_data(original_path[i],
-                                                                                      original_path[i + 1]),
-                                                              on_edge[(original_path[i], original_path[i + 1])]) for i
-                                         in range(len(original_path) - 1)]
+                path = perturbed_path[trip.next_node][trip.destination]
 
-                trip_time_diff = sum(path_weights) - sum(original_path_weights)
+                trip_time_diff = perturbed_time[trip.next_node][trip.destination] - unperturbed_time[trip.next_node][trip.destination]
                 assert trip_time_diff >= 0, f'{original_action}'
                 component_time_diff[self.base.nodes[trip.next_node]['component']] += trip_time_diff
 
@@ -178,13 +160,16 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
         if self.config['rewarding_rule'] == 'travel_time_increased':
             reward = component_time_diff
         elif self.config['rewarding_rule'] == 'step_count':
-            reward = vehicles_in_component
+            reward = 1
         elif self.config['rewarding_rule'] == 'proportional':
             reward = vehicles_in_component / self.max_number_of_vehicles
+            feature_vector = feature_vector / self.max_number_of_vehicles
         elif self.config['rewarding_rule'] == 'arrived':
             reward = -arrived_vehicles
         elif self.config['rewarding_rule'] == 'mixed':
             reward = vehicles_in_component / self.max_number_of_vehicles + 0.5 * component_time_diff
+        elif self.config['rewarding_rule'] == 'vehicle_count':
+            reward = vehicles_in_component
         else:
             raise Exception(f'Rewarding rule {self.config["rewarding_rule"]} not implemented.')
 
