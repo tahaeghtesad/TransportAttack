@@ -1,5 +1,6 @@
+import logging
 import os
-import random
+import sys
 from datetime import datetime
 
 import networkx as nx
@@ -7,23 +8,10 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from models.agents.heuristics.attackers.allocators import ProportionalAllocator
 from models.agents.heuristics.attackers.budgeting import FixedBudgeting
-from models.agents.heuristics.attackers.component import GreedyComponent
-from models.agents.noisy_agent import NoisyAttacker, EpsilonGreedyAttacker
-from models.agents.rl_agents.attackers.allocators.allocators import PPOAllocator
-from models.agents.rl_agents.attackers.component.coppo_component import CoPPOComponent
-from models.agents.rl_agents.attackers.component.mappo_component import MAPPOComponent
-from models.agents.rl_agents.attackers.ddpg_attacker import FixedBudgetNetworkedWideTD3, FixedBudgetNetworkedWideDDPG
-from models.agents.rl_agents.attackers.no_budget_td3_attacker import NoBudgetTD3Attacker
 from models.agents.rl_agents.attackers.ppo_attacker import FixedBudgetNetworkedWidePPO
-from models.agents.rl_agents.attackers.rl_attackers import Attacker
-from models.exploration.epsilon import ConstantEpsilon, DecayEpsilon
-from models.exploration.noise import GaussianNoiseDecay, ZeroNoise, GaussianNoise
 from transport_env.MultiAgentEnv import DynamicMultiAgentTransportationNetworkEnvironment
-from util.math import sigmoid
 from util.rl.experience_replay import ExperienceReplay, TrajectoryExperience
-from util.scheduler import SimultaneousTrainingScheduler
 from util.torch.writer import TBStatWriter
 
 
@@ -173,6 +161,7 @@ def train_on_policy_simple_attacker(run_id, env, config, attacker_model):  # ret
     episode = 0
     should_eval = episode % 10 == 0
     env_string = 'eval' if should_eval else 'env'
+    obs_list = []
 
     for global_step in (pbar := tqdm(range(config['attacker_config']['training_steps']))):
         step_count += 1
@@ -210,7 +199,7 @@ def train_on_policy_simple_attacker(run_id, env, config, attacker_model):  # ret
 
         writer.add_scalar(f'env/buffer_size', replay_buffer.size(), global_step)
 
-        if replay_buffer.size() == 256:
+        if replay_buffer.size() == 2048:
             with torch.autograd.set_detect_anomaly(True):
                 observations, allocations, budgets, actions, rewards, next_observations, dones, truncateds = replay_buffer.get_experiences()
                 stats = attacker_model.update(observations, allocations, budgets, actions, rewards,
@@ -230,6 +219,7 @@ def train_on_policy_simple_attacker(run_id, env, config, attacker_model):  # ret
                 f' ep: {episode} |'
                 f' Episode Reward {np.sum(np.array(episode_reward)):10.3f} |'
                 f' Detected {detected_at_step:10d} |'
+                f' Obs List Size {len(obs_list)} |'
             )
 
             writer.add_scalar(f'{env_string}/episode_reward', np.sum(episode_reward), global_step)
@@ -255,6 +245,11 @@ def train_on_policy_simple_attacker(run_id, env, config, attacker_model):  # ret
 
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        format='[%(asctime)s] [%(name)s] [%(threadName)s] [%(levelname)s] - %(message)s',
+        level=logging.INFO,
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
     env = DynamicMultiAgentTransportationNetworkEnvironment(dict(
         network=dict(
             method='network_file',
@@ -316,7 +311,7 @@ if __name__ == '__main__':
     # )
 
     free_flow_times = nx.get_edge_attributes(env.base, 'free_flow_time')
-    env_adj = [free_flow_times[e] for e in env.base.edges()]
+    env_adj = [free_flow_times[e] for e in env.base.n_edges()]
     env_adj = np.expand_dims(env_adj, axis=1)
 
     # attacker_model = NoisyAttacker(
@@ -358,29 +353,29 @@ if __name__ == '__main__':
     # )
 
     self_edge_component_mapping = [
-        [1, 2, 3, 4, 5, 6, 8, 9, 11, 12, 14, 15, 19, 23, 31, 35],
-        [13, 16, 17, 18, 20, 21, 22, 24, 25, 26, 29, 32, 43, 47, 48, 50, 51, 52, 54, 55, 60],
-        [7, 10, 27, 33, 34, 36, 37, 38, 39, 40, 42, 44, 66, 70, 71, 73, 74, 76],
-        [28, 30, 41, 45, 46, 49, 53, 57, 58, 59, 56, 61, 62, 63, 64, 65, 67, 68, 69, 72, 75]
+        [0, 1, 2, 3, 4, 5, 7, 8, 10, 11, 13, 14, 18, 22, 30, 34],
+        [12, 15, 16, 17, 19, 20, 21, 23, 24, 25, 28, 31, 42, 46, 47, 49, 50, 51, 53, 54, 59],
+        [6, 9, 26, 32, 33, 35, 36, 37, 38, 39, 41, 43, 65, 69, 70, 72, 73, 75],
+        [27, 29, 40, 44, 45, 48, 52, 56, 57, 58, 55, 60, 61, 62, 63, 64, 66, 67, 68, 71, 74]
     ]
-    for i in range(len(self_edge_component_mapping)):
-        for j in range(len(self_edge_component_mapping[i])):
-            self_edge_component_mapping[i][j] -= 1
 
     attacker_model = FixedBudgetNetworkedWidePPO(
+        env.get_adjacency_matrix(),
         self_edge_component_mapping,
         FixedBudgeting(30.0),
         5,
-        0.0001,
-        0.0001,
+        0.0003,
+        0.0003,
         0.3,
-        32,
+        64,
         0.99,
         0.95,
         0.5,
-        0.05,
+        0.01,
         10,
+        4,
         True,
+        False
     )
 
     # attacker_model = Attacker(
@@ -428,4 +423,4 @@ if __name__ == '__main__':
 
     print(attacker_model)
 
-    train_on_policy_simple_attacker(f'multi/{datetime.now().strftime("%Y%m%d%H%M%S%f")}', env, config, attacker_model)
+    train_on_policy_simple_attacker(f'{datetime.now().strftime("%Y%m%d%H%M%S%f")}', env, config, attacker_model)

@@ -32,7 +32,7 @@ def create_grid_graph_gre(
         power_mean=1.3862943611198908, power_std=0.0,
 ):
     G = nx.grid_2d_graph(rows, columns, create_using=nx.DiGraph)
-    for edge in list(G.edges):
+    for edge in list(G.n_edges):
         if edge[0][0] == 0 or edge[0][0] == rows - 1 or edge[0][1] == 0 or edge[0][1] == columns - 1:
             # Always keep rim edges
             continue
@@ -58,11 +58,11 @@ def create_grid_graph_gre(
             if neighbor in G.nodes and random.random() < q:
                 G.add_edge(node, neighbor)
 
-    for edge in G.edges:
-        G.edges[edge]['capacity'] = math.exp(random.gauss(capacity_mean, capacity_std))
-        G.edges[edge]['free_flow_time'] = math.exp(random.gauss(free_flow_time_mean, free_flow_time_std))
-        G.edges[edge]['b'] = math.exp(random.gauss(b_mean, b_std))
-        G.edges[edge]['power'] = math.exp(random.gauss(power_mean, power_std))
+    for edge in G.n_edges:
+        G.n_edges[edge]['capacity'] = math.exp(random.gauss(capacity_mean, capacity_std))
+        G.n_edges[edge]['free_flow_time'] = math.exp(random.gauss(free_flow_time_mean, free_flow_time_std))
+        G.n_edges[edge]['b'] = math.exp(random.gauss(b_mean, b_std))
+        G.n_edges[edge]['power'] = math.exp(random.gauss(power_mean, power_std))
 
     mapping = {(i, j): i * columns + j + 1 for i, j in G.nodes()}
     G = nx.relabel_nodes(G, mapping)
@@ -104,7 +104,7 @@ def gen(rows, columns, p, q, trip_density='high'):
     plt.savefig(f'TransportationNetworks/Generated/{name}.png')
     print(f'tries: {tries}')
     print(name)
-    print(f'n_edges: {len(graph.edges)}')
+    print(f'n_edges: {len(graph.n_edges)}')
     print(f'n_nodes: {len(graph.nodes)}')
 
 

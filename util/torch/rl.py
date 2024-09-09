@@ -17,7 +17,7 @@ class GeneralizedAdvantageEstimation(CustomModule):
         # Calculate advantages in reverse order (from the last time step to the first)
         for t in reversed(range(len(rewards))):
             if truncated[t]:
-                last_advantage = 0
+                last_advantage -= last_advantage
                 last_value = next_values[t]
             delta = rewards[t] + self.gamma * (1 - dones[t]) * last_value - values[t]
             last_advantage = delta + self.gamma * self.lam * (1 - dones[t]) * last_advantage

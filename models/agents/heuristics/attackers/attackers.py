@@ -32,7 +32,7 @@ def estimate_delay_for_action(
 
     perturbed = dict()
     on_edge = dict()
-    for i, (e, info) in enumerate(zip(reconstructed_graph.edges, network_graph.edges)):
+    for i, (e, info) in enumerate(zip(reconstructed_graph.edges, network_graph.n_edges)):
         perturbed[e] = action[i]
         on_edge[e] = info[1]
 
