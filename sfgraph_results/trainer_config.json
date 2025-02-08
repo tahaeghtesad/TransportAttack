@@ -1,0 +1,1 @@
+{"n_envs": 128, "attacker_training_steps": 5000000, "defender_training_steps": 1000000, "defender_n_history": 5, "do_config": {"iterations": 10, "testing_epochs": 32}}

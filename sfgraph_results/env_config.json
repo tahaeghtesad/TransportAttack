@@ -1,0 +1,1 @@
+{"network": {"method": "network_file", "city": "SiouxFalls", "randomize_factor": 0.5}, "horizon": 50, "render_mode": null, "congestion": true, "rewarding_rule": "proportional", "reward_multiplier": 1.0, "n_components": 4}

@@ -14,7 +14,7 @@ def solve_lp(payoff: np.ndarray) -> np.ndarray:
     Function for returning mixed strategies of the first step of double oracle iterations.
     :param payoff: Two dimensinal array. Payoff matrix of the players.
     The row is defender and column is attcker. This is the payoff for row player.
-    :return: List, mixed strategy of the attacker and defender at NE by solving maxmini problem.
+    :return: List, mixed strategy of the column player at NE by solving maxmini problem.
     """
     # This implementation is based on page 88 of the book multiagent systems (Shoham etc.)
     # http://www.masfoundations.org/mas.pdf
@@ -36,6 +36,6 @@ def solve_lp(payoff: np.ndarray) -> np.ndarray:
         bound += ((0, None),)
     bound += ((None, None),)
 
-    res_attacker = op.linprog(c, A_ub, b_ub, A_eq, b_eq, bounds=bound, method="highs")
+    res = op.linprog(c, A_ub, b_ub, A_eq, b_eq, bounds=bound, method="highs")
 
-    return res_attacker.x[0:n]
+    return res.x[0:n]

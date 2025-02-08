@@ -1,0 +1,1 @@
+{"network": {"method": "edge_list", "file": "GRE-3x2-0.5051-0.1111-20241025130124181010_default", "randomize_factor": 0.5}, "horizon": 50, "render_mode": null, "congestion": true, "rewarding_rule": "proportional", "reward_multiplier": 1.0, "n_components": 4}

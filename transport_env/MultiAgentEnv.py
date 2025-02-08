@@ -45,6 +45,9 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
         return self.get_current_observation_edge_vector()
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, np.ndarray, bool, dict]:
+        # assert all action indices are non-negative
+        assert (action >= 0).all(), f'Action should be non-negative. {action}'
+        assert (action < np.inf).all(), f'Action should not be finite. {action}'
         original_action = action
         action = np.maximum(action, 0)
 
@@ -135,7 +138,7 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
 
         info = dict(
             original_reward=self.get_reward(),
-            perturbed_edge_travel_times=[round(self.get_travel_time(u, v, self.base.get_edge_data(u, v), on_edge[(u, v)]) + perturbed[(u, v)]) for u, v
+            perturbed_edge_travel_times=[self.get_travel_time(u, v, self.base.get_edge_data(u, v), on_edge[(u, v)]) + perturbed[(u, v)] for u, v
                                          in self.base.edges]
         )
 
@@ -249,7 +252,7 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
         )
 
     def get_travel_times_assuming_the_attack(self, action: np.ndarray) -> np.ndarray:
-        action = np.maximum(action, 0)
+        assert (action >= 0).all(), f'Action should be non-negative. {action}'
 
         on_edge = self.get_on_edge_vehicles()
 
@@ -258,7 +261,7 @@ class DynamicMultiAgentTransportationNetworkEnvironment(BaseTransportationNetwor
             perturbed[e] = action[i]
 
         return np.array(
-            [round(self.get_travel_time(u, v, self.base.get_edge_data(u, v), on_edge[(u, v)]) + perturbed[(u, v)]) for u, v in self.base.edges])
+            [self.get_travel_time(u, v, self.base.get_edge_data(u, v), on_edge[(u, v)]) + perturbed[(u, v)] for u, v in self.base.edges])
 
     def show_base_graph(self, title=None):
         pos = nx.spectral_layout(self.base)

@@ -126,7 +126,7 @@ def create_roc_curve(
     plt.clf()
 
 
-def __save(save_path):
+def save(save_path):
     if save_path is None:
         return
 
